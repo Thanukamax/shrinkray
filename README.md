@@ -71,28 +71,41 @@ The original 6-phase roadmap was rewritten after research — see `research/SUMM
 ```bash
 bun install
 cd src-tauri && cargo fetch && cd ..
-bun run tauri dev      # window at localhost:1420
-bun run tauri build    # production binary
+python3 scripts/generate_icons.py    # placeholder icons; one-time
+bun run tauri dev                    # window at localhost:1420
+bun run tauri build                  # production binary
 ```
 
-Drop a UE game folder in the picker. v0 walks the tree and reports a census. Real trimming lands in v1.
+The current build (v0.3.0) does:
+- **analyze** — folder census + L10N detection + pak inventory (signed/encrypted/readable) + top 50 fattest files
+- **L10N strip + pak trim** — drop dub languages from loose files and from inside paks
+- **loose-file recompression** — PNG via `oxipng`, WAV/FLAC → Opus via `opusenc` (both detected at runtime, install hints surfaced if missing)
+- **differential backup + restore** — every destructive op is preceded by a `shrinkray_backup/` entry; restore replays the manifest in reverse with hash verification
+- **preview-only mode** — default-on for first-time users; hard-disables every apply button
+
+System tool deps (Linux): `opus-tools` (for `opusenc`), optionally `oxipng` (install via `cargo install oxipng` or your distro).
 
 ## Layout
 
 ```
-src/                   # React frontend (folder picker, report panel)
-src-tauri/
-  src/main.rs          # bin entry → lib::run()
-  src/lib.rs           # Tauri builder + analyze_folder command
-  src/analyze.rs       # folder census (v0)
-  src/pak.rs           # repak wrapper (Phase 1 stub)
-  src/texture.rs       # loose texture encode (Phase 1 stub)
-  src/audio.rs         # loose audio encode (Phase 1 stub)
-  Cargo.toml
-  tauri.conf.json
+src/                   # React frontend
+src-tauri/src/
+  lib.rs               # Tauri commands
+  analyze.rs           # folder census + L10N detection (step 1)
+  pak.rs               # repak wrapper + pak classification
+  backup.rs            # differential backup + restore (step 2)
+  strip.rs             # L10N stripping + pak trimming (step 3)
+  recompress.rs        # PNG/WAV/FLAC recompression via shell-outs (step 4)
 research/              # research notes (A-E + SUMMARY) — read before contributing
-.github/workflows/build.yml
+scripts/               # generate_icons.py, lyra-smoke.sh
+.github/workflows/     # CI (cargo test + clippy + bun build)
 ```
+
+## Validation against real games
+
+The unit tests build synthetic paks via `repak`'s writer and round-trip them through our trim + backup + restore pipeline (47 tests, all in CI). That gates correctness of the *plumbing* but does not prove shrinkray-modified games still launch.
+
+The one corpus test that would prove that — Lyra Starter Game cooked PC build, optimize, boot, watch for crash — needs an Epic account to download Lyra source and a full Unreal Engine install to cook a binary, neither of which fits the free GitHub runners. Until a self-hosted runner with a pre-cooked corpus exists, **Lyra validation is a manual pre-release step**: see `scripts/lyra-smoke.sh` for the procedure.
 
 ## License
 MIT. See [LICENSE](LICENSE).
