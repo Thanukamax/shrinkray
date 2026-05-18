@@ -70,6 +70,41 @@ type StripReport = {
   total_bytes_saved: number
 }
 
+type EncoderAvailability = {
+  encoder: 'oxipng' | 'opusenc'
+  available: boolean
+  version: string | null
+  install_hint: string
+}
+type RecompressKind = 'png' | 'wav' | 'flac'
+type PlannedItem = {
+  path: string
+  kind: RecompressKind
+  encoder: 'oxipng' | 'opusenc'
+  size: number
+}
+type RecompressPlan = {
+  root: string
+  items: PlannedItem[]
+  total_input_bytes: number
+  missing_encoders: ('oxipng' | 'opusenc')[]
+}
+type RecompressResult = {
+  path: string
+  kind: RecompressKind
+  original_size: number
+  new_size: number
+  bytes_saved: number
+  new_path: string
+}
+type RecompressFailure = { path: string; kind: RecompressKind; reason: string }
+type RecompressReport = {
+  recompressed: RecompressResult[]
+  skipped_no_improvement: string[]
+  failures: RecompressFailure[]
+  total_bytes_saved: number
+}
+
 export default function App() {
   const [path, setPath] = useState<string | null>(null)
   const [report, setReport] = useState<AnalysisReport | null>(null)
@@ -82,6 +117,11 @@ export default function App() {
   const [restoring, setRestoring] = useState(false)
   const [planning, setPlanning] = useState(false)
   const [applying, setApplying] = useState(false)
+  const [encoders, setEncoders] = useState<EncoderAvailability[]>([])
+  const [recompressPlan, setRecompressPlan] = useState<RecompressPlan | null>(null)
+  const [recompressReport, setRecompressReport] = useState<RecompressReport | null>(null)
+  const [planningRecompress, setPlanningRecompress] = useState(false)
+  const [recompressing, setRecompressing] = useState(false)
   const [error, setError] = useState<string | null>(null)
 
   async function pickFolder() {
@@ -89,13 +129,19 @@ export default function App() {
     setRestore(null)
     setPlan(null)
     setStripReport(null)
+    setRecompressPlan(null)
+    setRecompressReport(null)
     setDropLangs(new Set())
     const sel = await open({ directory: true, multiple: false, title: 'Pick a game folder' })
     if (typeof sel === 'string') {
       setPath(sel)
       setReport(null)
-      const st = await invoke<BackupStatus | null>('backup_status', { path: sel })
+      const [st, encs] = await Promise.all([
+        invoke<BackupStatus | null>('backup_status', { path: sel }),
+        invoke<EncoderAvailability[]>('detect_encoders'),
+      ])
       setBackup(st)
+      setEncoders(encs)
     }
   }
 
@@ -162,6 +208,57 @@ export default function App() {
     }
   }
 
+  async function runRecompressPlan() {
+    if (!path) return
+    setPlanningRecompress(true)
+    setError(null)
+    setRecompressReport(null)
+    try {
+      const p = await invoke<RecompressPlan>('plan_recompress', { path })
+      setRecompressPlan(p)
+    } catch (e) {
+      setError(String(e))
+    } finally {
+      setPlanningRecompress(false)
+    }
+  }
+
+  async function applyRecompress() {
+    if (!path || !recompressPlan || recompressPlan.items.length === 0) return
+    const summary =
+      `About to recompress ${recompressPlan.items.length} loose files in ${path}\n` +
+      `  ${formatBytes(recompressPlan.total_input_bytes)} input bytes\n` +
+      `  WAV/FLAC → .opus  (existing files deleted, savings ~85%)\n` +
+      `  PNG → re-optimised in place (lossless, savings ~10-30%)\n\n` +
+      (backup
+        ? `Existing backup will record every change.`
+        : `A differential backup will be created first.`) +
+      `\n\nContinue?`
+    if (!window.confirm(summary)) return
+
+    setRecompressing(true)
+    setError(null)
+    try {
+      if (!backup) {
+        const fresh = await invoke<BackupStatus>('ensure_backup', { path })
+        setBackup(fresh)
+      }
+      const r = await invoke<RecompressReport>('apply_recompress', { path })
+      setRecompressReport(r)
+      const [fresh, st] = await Promise.all([
+        invoke<AnalysisReport>('analyze_folder', { path }),
+        invoke<BackupStatus | null>('backup_status', { path }),
+      ])
+      setReport(fresh)
+      setBackup(st)
+      setRecompressPlan(null)
+    } catch (e) {
+      setError(String(e))
+    } finally {
+      setRecompressing(false)
+    }
+  }
+
   async function applyStrip() {
     if (!path || dropLangs.size === 0 || !plan) return
     const summary =
@@ -220,7 +317,7 @@ export default function App() {
     <main className="layout">
       <header>
         <h1>shrinkray</h1>
-        <span className="muted">UE game folder optimizer · v0.1.0 · l10n strip + pak trim</span>
+        <span className="muted">UE game folder optimizer · v0.2.0 · l10n strip + pak trim + loose recompress</span>
       </header>
 
       <section className="drop">
@@ -441,6 +538,137 @@ export default function App() {
                     </li>
                   ))}
                 </ul>
+              )}
+            </section>
+          )}
+
+          <h2 style={{ marginTop: '1.6rem' }}>Loose-file recompression</h2>
+          <table>
+            <tbody>
+              {encoders.map((e) => (
+                <Row
+                  key={e.encoder}
+                  label={e.encoder}
+                  value={
+                    e.available
+                      ? `available · ${e.version ?? 'unknown version'}`
+                      : `missing · ${e.install_hint}`
+                  }
+                  accent={!e.available}
+                />
+              ))}
+            </tbody>
+          </table>
+          <div className="actions" style={{ marginTop: '0.9rem' }}>
+            <button
+              onClick={runRecompressPlan}
+              disabled={planningRecompress || recompressing}
+            >
+              {planningRecompress ? 'scanning…' : 'find loose files'}
+            </button>
+            <button
+              className="primary destructive"
+              onClick={applyRecompress}
+              disabled={
+                recompressing ||
+                !recompressPlan ||
+                recompressPlan.items.length === 0
+              }
+              title={!recompressPlan ? 'scan first' : ''}
+            >
+              {recompressing
+                ? 'recompressing…'
+                : backup
+                  ? 'recompress (write to backup + folder)'
+                  : 'recompress (create backup + write)'}
+            </button>
+          </div>
+
+          {recompressPlan && (
+            <section className="plan-card">
+              <h2 style={{ marginTop: '1.6rem' }}>Recompress plan</h2>
+              <table>
+                <tbody>
+                  <Row
+                    label="files to process"
+                    value={recompressPlan.items.length.toLocaleString()}
+                    accent
+                  />
+                  <Row
+                    label="total input bytes"
+                    value={formatBytes(recompressPlan.total_input_bytes)}
+                  />
+                  <Row
+                    label="png"
+                    value={recompressPlan.items
+                      .filter((i) => i.kind === 'png')
+                      .length.toLocaleString()}
+                  />
+                  <Row
+                    label="wav"
+                    value={recompressPlan.items
+                      .filter((i) => i.kind === 'wav')
+                      .length.toLocaleString()}
+                  />
+                  <Row
+                    label="flac"
+                    value={recompressPlan.items
+                      .filter((i) => i.kind === 'flac')
+                      .length.toLocaleString()}
+                  />
+                  {recompressPlan.missing_encoders.length > 0 && (
+                    <Row
+                      label="missing encoders"
+                      value={recompressPlan.missing_encoders.join(', ')}
+                      accent
+                    />
+                  )}
+                </tbody>
+              </table>
+            </section>
+          )}
+
+          {recompressReport && (
+            <section className="plan-card">
+              <h2 style={{ marginTop: '1.6rem' }}>Recompress applied</h2>
+              <table>
+                <tbody>
+                  <Row
+                    label="files recompressed"
+                    value={recompressReport.recompressed.length.toLocaleString()}
+                    accent
+                  />
+                  <Row
+                    label="skipped (no improvement)"
+                    value={recompressReport.skipped_no_improvement.length.toLocaleString()}
+                  />
+                  <Row
+                    label="bytes saved"
+                    value={formatBytes(recompressReport.total_bytes_saved)}
+                    accent
+                  />
+                  {recompressReport.failures.length > 0 && (
+                    <Row
+                      label="failures"
+                      value={recompressReport.failures.length.toLocaleString()}
+                    />
+                  )}
+                </tbody>
+              </table>
+              {recompressReport.failures.length > 0 && (
+                <details style={{ marginTop: '0.6rem' }}>
+                  <summary className="muted small">
+                    {recompressReport.failures.length} failed — click to expand
+                  </summary>
+                  <ul className="reasons">
+                    {recompressReport.failures.slice(0, 20).map((f) => (
+                      <li key={f.path} className="err">
+                        <span className="path-small">{f.path}</span>
+                        <span className="muted small"> — {f.reason}</span>
+                      </li>
+                    ))}
+                  </ul>
+                </details>
               )}
             </section>
           )}

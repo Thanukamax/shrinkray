@@ -44,6 +44,9 @@ pub enum BackupMode {
 pub enum Op {
     Delete,
     Replace,
+    /// Path did not exist before — shrinkray is about to create it (e.g.
+    /// WAV→Opus produces a new `.opus` file). On restore we delete it.
+    Create,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -177,6 +180,28 @@ impl Backup {
         self.persist_manifest()
     }
 
+    /// Record that the caller is about to create a brand-new file. No payload
+    /// is saved because there are no original bytes. On restore the created
+    /// file is deleted. Errors if `path` already exists — use record_full_replace
+    /// for overwrite cases.
+    pub fn record_create(&mut self, path: &Path) -> Result<()> {
+        let abs = self.absolutize(path)?;
+        if abs.exists() {
+            bail!("record_create called for {} but the path already exists", abs.display());
+        }
+        let entry = Entry {
+            path: rel_posix(&abs, &self.root)?,
+            op: Op::Create,
+            original_sha256: String::new(),
+            original_size: 0,
+            new_sha256: None,
+            new_size: None,
+            payload: String::new(),
+        };
+        self.manifest.entries.push(entry);
+        self.persist_manifest()
+    }
+
     /// Record an upcoming file deletion. Saves the original bytes, appends a
     /// manifest entry. Caller then deletes `path`.
     pub fn record_delete(&mut self, path: &Path) -> Result<()> {
@@ -229,6 +254,15 @@ impl Backup {
     }
 
     fn restore_entry(&self, abs: &Path, entry: &Entry) -> Result<()> {
+        // Create entries: undo a creation by deleting the file. No payload
+        // to verify since there were no original bytes.
+        if entry.op == Op::Create {
+            if abs.exists() {
+                fs::remove_file(abs).with_context(|| format!("remove {}", abs.display()))?;
+            }
+            return Ok(());
+        }
+
         let payload_path = self.backup_dir.join(&entry.payload);
         let bytes = fs::read(&payload_path)
             .with_context(|| format!("read payload {}", payload_path.display()))?;
@@ -529,6 +563,55 @@ mod tests {
         fs::write(&abs, b"x").unwrap();
         let s = rel_posix(&abs, &root).unwrap();
         assert_eq!(s, "a/b/c.txt");
+    }
+
+    #[test]
+    fn record_create_round_trip() {
+        let tmp = tempfile::tempdir().unwrap();
+        let root = setup_game(tmp.path());
+        let new_file = root.join("Content/L10N/fr/voice.opus");
+
+        let mut backup = Backup::new(&root, BackupMode::Differential).unwrap();
+        backup.record_create(&new_file).unwrap();
+        fs::write(&new_file, b"newly_created_opus_bytes").unwrap();
+        assert!(new_file.exists());
+
+        let report = backup.restore().unwrap();
+        assert_eq!(report.restored.len(), 1);
+        assert!(report.failures.is_empty());
+        assert!(!new_file.exists());
+    }
+
+    #[test]
+    fn record_create_refuses_existing_path() {
+        let tmp = tempfile::tempdir().unwrap();
+        let root = setup_game(tmp.path());
+        let existing = root.join("Content/L10N/fr/voice.uasset");
+        let mut backup = Backup::new(&root, BackupMode::Differential).unwrap();
+        let err = backup.record_create(&existing).unwrap_err();
+        assert!(err.to_string().contains("already exists"));
+    }
+
+    #[test]
+    fn create_plus_delete_round_trip() {
+        let tmp = tempfile::tempdir().unwrap();
+        let root = setup_game(tmp.path());
+        let wav = root.join("Content/L10N/fr/voice.uasset"); // pretend this is the source
+        let opus = root.join("Content/L10N/fr/voice.opus");  // and this is the converted output
+
+        let mut backup = Backup::new(&root, BackupMode::Differential).unwrap();
+        backup.record_delete(&wav).unwrap();
+        fs::remove_file(&wav).unwrap();
+        backup.record_create(&opus).unwrap();
+        fs::write(&opus, b"opus_payload").unwrap();
+
+        let report = backup.restore().unwrap();
+        assert_eq!(report.restored.len(), 2);
+        assert!(report.failures.is_empty());
+        // After restore: original wav recreated, opus removed.
+        assert!(wav.exists());
+        assert!(!opus.exists());
+        assert_eq!(fs::read(&wav).unwrap(), b"french_voice_bytes");
     }
 
     #[test]
