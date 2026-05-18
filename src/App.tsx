@@ -3,13 +3,25 @@ import { invoke } from '@tauri-apps/api/core'
 import { open } from '@tauri-apps/plugin-dialog'
 
 type Category = { count: number; size: number }
+type FatFile = { path: string; size: number; kind: string }
+type UnreadablePak = { path: string; reason: string }
+type PakInventory = {
+  readable: string[]
+  signed: string[]
+  encrypted: string[]
+  unreadable: UnreadablePak[]
+}
 type AnalysisReport = {
+  root: string
   total_files: number
   total_size: number
   textures: Category
   audio: Category
   paks: Category
-  estimated_savings: number
+  languages: Record<string, Category>
+  pak_inventory: PakInventory
+  top_files: FatFile[]
+  estimated_l10n_savings: number
 }
 
 export default function App() {
@@ -43,14 +55,18 @@ export default function App() {
 
   const savedPct =
     report && report.total_size > 0
-      ? Math.round((report.estimated_savings / report.total_size) * 100)
+      ? Math.round((report.estimated_l10n_savings / report.total_size) * 100)
       : 0
+
+  const languages = report ? Object.entries(report.languages).sort((a, b) => b[1].size - a[1].size) : []
+  const largestLang = languages[0]?.[0]
+  const inv = report?.pak_inventory
 
   return (
     <main className="layout">
       <header>
         <h1>shrinkray</h1>
-        <span className="muted">UE game folder optimizer · phase 0</span>
+        <span className="muted">UE game folder optimizer · v0.0.2 · analysis</span>
       </header>
 
       <section className="drop">
@@ -91,24 +107,117 @@ export default function App() {
                 label="paks"
                 value={`${report.paks.count.toLocaleString()} · ${formatBytes(report.paks.size)}`}
               />
-              <Row
-                label="estimated savings"
-                value={`${formatBytes(report.estimated_savings)}  (~${savedPct}%)`}
-                accent
-              />
+              {languages.length > 1 && (
+                <Row
+                  label="l10n savings ceiling"
+                  value={`${formatBytes(report.estimated_l10n_savings)}  (~${savedPct}% of folder)`}
+                  accent
+                />
+              )}
             </tbody>
           </table>
-          <p className="muted small">
-            Phase 0 estimate based on a fixed mix per category. Real per-asset estimates land in
-            Phase 1 once textures and audio can be introspected.
-          </p>
+          {languages.length > 1 && (
+            <p className="muted small" style={{ marginTop: '0.6rem' }}>
+              Ceiling assumes you keep only the largest detected language ({largestLang}).
+              Real savings depend on which languages you actually strip in step 3.
+            </p>
+          )}
+
+          {languages.length > 0 && (
+            <>
+              <h2 style={{ marginTop: '1.6rem' }}>Languages detected ({languages.length})</h2>
+              <table>
+                <tbody>
+                  {languages.map(([code, cat]) => (
+                    <Row
+                      key={code}
+                      label={code === largestLang ? `${code}  (largest)` : code}
+                      value={`${cat.count.toLocaleString()} files · ${formatBytes(cat.size)}`}
+                      accent={code === largestLang}
+                    />
+                  ))}
+                </tbody>
+              </table>
+            </>
+          )}
+
+          {inv && report.paks.count > 0 && (
+            <>
+              <h2 style={{ marginTop: '1.6rem' }}>Pak inventory</h2>
+              <table>
+                <tbody>
+                  <Row label="readable" value={inv.readable.length.toLocaleString()} />
+                  <Row
+                    label="signed (untouchable)"
+                    value={inv.signed.length.toLocaleString()}
+                    accent={inv.signed.length > 0}
+                  />
+                  <Row
+                    label="encrypted (needs key)"
+                    value={inv.encrypted.length.toLocaleString()}
+                    accent={inv.encrypted.length > 0}
+                  />
+                  <Row
+                    label="unreadable"
+                    value={inv.unreadable.length.toLocaleString()}
+                    accent={inv.unreadable.length > 0}
+                  />
+                </tbody>
+              </table>
+              {inv.unreadable.length > 0 && (
+                <details style={{ marginTop: '0.6rem' }}>
+                  <summary className="muted small">
+                    {inv.unreadable.length} unreadable — click to expand
+                  </summary>
+                  <ul className="reasons">
+                    {inv.unreadable.slice(0, 20).map((u) => (
+                      <li key={u.path}>
+                        <span className="path-small">{u.path}</span>
+                        <span className="muted small"> — {u.reason}</span>
+                      </li>
+                    ))}
+                    {inv.unreadable.length > 20 && (
+                      <li className="muted small">…and {inv.unreadable.length - 20} more</li>
+                    )}
+                  </ul>
+                </details>
+              )}
+            </>
+          )}
+
+          {report.top_files.length > 0 && (
+            <>
+              <h2 style={{ marginTop: '1.6rem' }}>
+                Top {report.top_files.length} fattest files
+              </h2>
+              <table className="top">
+                <tbody>
+                  {report.top_files.map((f) => (
+                    <tr key={f.path}>
+                      <td className="kind">{f.kind}</td>
+                      <td className="path-small" title={f.path}>{f.path}</td>
+                      <td className="size">{formatBytes(f.size)}</td>
+                    </tr>
+                  ))}
+                </tbody>
+              </table>
+            </>
+          )}
         </section>
       )}
     </main>
   )
 }
 
-function Row({ label, value, accent }: { label: string; value: string; accent?: boolean }) {
+function Row({
+  label,
+  value,
+  accent,
+}: {
+  label: string
+  value: string
+  accent?: boolean
+}) {
   return (
     <tr>
       <td>{label}</td>

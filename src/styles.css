@@ -100,3 +100,43 @@ button:disabled { opacity: 0.5; cursor: not-allowed; }
   font-size: 0.75rem;
   white-space: pre-wrap;
 }
+
+.report table.top td { padding: 0.3rem 0.4rem; vertical-align: top; }
+.report table.top td.kind {
+  color: var(--muted);
+  text-transform: uppercase;
+  letter-spacing: 0.08em;
+  font-size: 0.65rem;
+  width: 4.5rem;
+}
+.report table.top td.path-small,
+.path-small {
+  font-size: 0.72rem;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  max-width: 100%;
+}
+.report table.top td.size {
+  text-align: right;
+  font-variant-numeric: tabular-nums;
+  color: var(--accent);
+  white-space: nowrap;
+  width: 6rem;
+}
+
+.reasons {
+  list-style: none;
+  margin-top: 0.4rem;
+  padding-left: 0.4rem;
+  border-left: 1px solid var(--line);
+}
+.reasons li {
+  padding: 0.25rem 0 0.25rem 0.6rem;
+  font-size: 0.72rem;
+}
+
+details summary {
+  cursor: pointer;
+  user-select: none;
+}
