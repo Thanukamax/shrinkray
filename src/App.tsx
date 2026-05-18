@@ -1,6 +1,31 @@
-import { useMemo, useState } from 'react'
+import { useEffect, useMemo, useState } from 'react'
 import { invoke } from '@tauri-apps/api/core'
 import { open } from '@tauri-apps/plugin-dialog'
+
+const PREVIEW_ONLY_KEY = 'shrinkray.preview-only'
+const SEEN_KEY = 'shrinkray.seen'
+
+function loadPreviewOnly(): boolean {
+  try {
+    const seen = localStorage.getItem(SEEN_KEY)
+    if (seen !== 'true') {
+      // First run: be safe — default to preview-only.
+      return true
+    }
+    return localStorage.getItem(PREVIEW_ONLY_KEY) === 'true'
+  } catch {
+    return true
+  }
+}
+
+function persistPreviewOnly(value: boolean) {
+  try {
+    localStorage.setItem(PREVIEW_ONLY_KEY, value ? 'true' : 'false')
+    localStorage.setItem(SEEN_KEY, 'true')
+  } catch {
+    /* ignore — incognito or storage-disabled */
+  }
+}
 
 type Category = { count: number; size: number }
 type FatFile = { path: string; size: number; kind: string }
@@ -122,7 +147,12 @@ export default function App() {
   const [recompressReport, setRecompressReport] = useState<RecompressReport | null>(null)
   const [planningRecompress, setPlanningRecompress] = useState(false)
   const [recompressing, setRecompressing] = useState(false)
+  const [previewOnly, setPreviewOnly] = useState<boolean>(() => loadPreviewOnly())
   const [error, setError] = useState<string | null>(null)
+
+  useEffect(() => {
+    persistPreviewOnly(previewOnly)
+  }, [previewOnly])
 
   async function pickFolder() {
     setError(null)
@@ -224,7 +254,7 @@ export default function App() {
   }
 
   async function applyRecompress() {
-    if (!path || !recompressPlan || recompressPlan.items.length === 0) return
+    if (!path || !recompressPlan || recompressPlan.items.length === 0 || previewOnly) return
     const summary =
       `About to recompress ${recompressPlan.items.length} loose files in ${path}\n` +
       `  ${formatBytes(recompressPlan.total_input_bytes)} input bytes\n` +
@@ -260,7 +290,7 @@ export default function App() {
   }
 
   async function applyStrip() {
-    if (!path || dropLangs.size === 0 || !plan) return
+    if (!path || dropLangs.size === 0 || !plan || previewOnly) return
     const summary =
       `About to drop ${dropLangs.size} language(s): ${Array.from(dropLangs).join(', ')}\n` +
       `  ${plan.loose_files.length} loose files\n` +
@@ -317,10 +347,27 @@ export default function App() {
     <main className="layout">
       <header>
         <h1>shrinkray</h1>
-        <span className="muted">UE game folder optimizer · v0.2.0 · l10n strip + pak trim + loose recompress</span>
+        <span className="muted">UE game folder optimizer · v0.3.0</span>
+        <span className={`mode-badge ${previewOnly ? 'mode-preview' : 'mode-write'}`}>
+          {previewOnly ? 'preview' : 'WRITE'}
+        </span>
       </header>
 
       <section className="drop">
+        <label className="preview-toggle">
+          <input
+            type="checkbox"
+            checked={previewOnly}
+            onChange={(e) => setPreviewOnly(e.target.checked)}
+          />
+          <span>
+            preview-only mode
+            <span className="muted small">
+              {' '}
+              — when checked, apply buttons are disabled and no writes happen
+            </span>
+          </span>
+        </label>
         {path ? (
           <p className="path" title={path}>
             {path}
@@ -449,14 +496,24 @@ export default function App() {
                 <button
                   className="primary destructive"
                   onClick={applyStrip}
-                  disabled={applying || dropLangs.size === 0 || !plan}
-                  title={!plan ? 'preview first' : ''}
+                  disabled={
+                    applying || dropLangs.size === 0 || !plan || previewOnly
+                  }
+                  title={
+                    previewOnly
+                      ? 'preview-only mode is on — uncheck the toggle at the top to enable writes'
+                      : !plan
+                        ? 'preview first'
+                        : ''
+                  }
                 >
                   {applying
                     ? 'applying…'
-                    : backup
-                      ? 'apply (write to backup + folder)'
-                      : 'apply (create backup + write)'}
+                    : previewOnly
+                      ? 'apply (preview-only mode)'
+                      : backup
+                        ? 'apply (write to backup + folder)'
+                        : 'apply (create backup + write)'}
                 </button>
               </div>
             </>
@@ -572,15 +629,24 @@ export default function App() {
               disabled={
                 recompressing ||
                 !recompressPlan ||
-                recompressPlan.items.length === 0
+                recompressPlan.items.length === 0 ||
+                previewOnly
               }
-              title={!recompressPlan ? 'scan first' : ''}
+              title={
+                previewOnly
+                  ? 'preview-only mode is on — uncheck the toggle at the top to enable writes'
+                  : !recompressPlan
+                    ? 'scan first'
+                    : ''
+              }
             >
               {recompressing
                 ? 'recompressing…'
-                : backup
-                  ? 'recompress (write to backup + folder)'
-                  : 'recompress (create backup + write)'}
+                : previewOnly
+                  ? 'recompress (preview-only mode)'
+                  : backup
+                    ? 'recompress (write to backup + folder)'
+                    : 'recompress (create backup + write)'}
             </button>
           </div>
 

@@ -1,6 +1,6 @@
 [package]
 name = "shrinkray"
-version = "0.2.0"
+version = "0.3.0"
 description = "Cut Unreal Engine game folder size by trimming what you don't need"
 authors = ["Thanukamax"]
 license = "MIT"
