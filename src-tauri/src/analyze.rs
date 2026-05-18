@@ -154,7 +154,7 @@ fn rel_path(p: &Path, root: &Path) -> String {
 /// Returns the detected language code for a path containing `L10N/<lang>/...`
 /// or `Localization/<target>/<lang>/...`. Returns None if no L10N segment or no
 /// well-formed language code follows.
-fn detect_language(path: &Path) -> Option<String> {
+pub(crate) fn detect_language(path: &Path) -> Option<String> {
     let mut in_l10n = false;
     for comp in path.iter().filter_map(|c| c.to_str()) {
         let lc = comp.to_ascii_lowercase();

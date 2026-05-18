@@ -149,3 +149,35 @@ details summary {
   border-color: rgba(255, 138, 61, 0.35);
 }
 .backup-card h2 { color: var(--accent); }
+
+.lang-row {
+  display: inline-flex;
+  align-items: center;
+  gap: 0.5rem;
+  cursor: pointer;
+  user-select: none;
+}
+.lang-row input[type='checkbox'] {
+  accent-color: var(--accent);
+}
+tr.dropping td { color: var(--fg); }
+
+.plan-card {
+  margin-top: 1rem;
+  padding: 0.9rem 1.1rem;
+  border: 1px solid rgba(255, 138, 61, 0.18);
+  border-radius: 3px;
+  background: rgba(255, 138, 61, 0.04);
+}
+.plan-card h2 { margin-top: 0 !important; }
+
+button.destructive {
+  background: var(--err);
+  border-color: var(--err);
+  color: #fff;
+}
+button.destructive:disabled {
+  background: rgba(255, 85, 119, 0.3);
+  border-color: rgba(255, 85, 119, 0.3);
+  color: rgba(255, 255, 255, 0.6);
+}

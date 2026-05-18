@@ -1,4 +1,4 @@
-import { useState } from 'react'
+import { useMemo, useState } from 'react'
 import { invoke } from '@tauri-apps/api/core'
 import { open } from '@tauri-apps/plugin-dialog'
 
@@ -37,23 +37,63 @@ type RestoreReport = {
   failures: { path: string; reason: string }[]
 }
 
+type PlannedFile = { path: string; size: number; language: string }
+type PlannedPakChange = {
+  pak: string
+  dropped_entries: number
+  kept_entries: number
+  becomes_empty: boolean
+}
+type StripPlan = {
+  root: string
+  drop_languages: string[]
+  loose_files: PlannedFile[]
+  pak_changes: PlannedPakChange[]
+  skipped_signed_paks: string[]
+  skipped_encrypted_paks: string[]
+  skipped_unreadable_paks: string[]
+  total_loose_bytes: number
+}
+
+type PakRewrite = {
+  pak: string
+  original_size: number
+  new_size: number
+  dropped_entries: number
+}
+type StripFailure = { path: string; reason: string }
+type StripReport = {
+  deleted_files: string[]
+  rewritten_paks: PakRewrite[]
+  deleted_paks: string[]
+  failures: StripFailure[]
+  total_bytes_saved: number
+}
+
 export default function App() {
   const [path, setPath] = useState<string | null>(null)
   const [report, setReport] = useState<AnalysisReport | null>(null)
   const [backup, setBackup] = useState<BackupStatus | null>(null)
   const [restore, setRestore] = useState<RestoreReport | null>(null)
+  const [dropLangs, setDropLangs] = useState<Set<string>>(new Set())
+  const [plan, setPlan] = useState<StripPlan | null>(null)
+  const [stripReport, setStripReport] = useState<StripReport | null>(null)
   const [pending, setPending] = useState(false)
   const [restoring, setRestoring] = useState(false)
+  const [planning, setPlanning] = useState(false)
+  const [applying, setApplying] = useState(false)
   const [error, setError] = useState<string | null>(null)
 
   async function pickFolder() {
     setError(null)
     setRestore(null)
+    setPlan(null)
+    setStripReport(null)
+    setDropLangs(new Set())
     const sel = await open({ directory: true, multiple: false, title: 'Pick a game folder' })
     if (typeof sel === 'string') {
       setPath(sel)
       setReport(null)
-      // Probe for an existing backup in parallel — read-only, safe.
       const st = await invoke<BackupStatus | null>('backup_status', { path: sel })
       setBackup(st)
     }
@@ -66,7 +106,6 @@ export default function App() {
     try {
       const r = await invoke<AnalysisReport>('analyze_folder', { path })
       setReport(r)
-      // Re-probe in case the user created one out-of-band.
       const st = await invoke<BackupStatus | null>('backup_status', { path })
       setBackup(st)
     } catch (e) {
@@ -84,10 +123,81 @@ export default function App() {
     try {
       const result = await invoke<RestoreReport>('restore_folder', { path })
       setRestore(result)
+      // After restore, re-probe everything.
+      const st = await invoke<BackupStatus | null>('backup_status', { path })
+      setBackup(st)
     } catch (e) {
       setError(String(e))
     } finally {
       setRestoring(false)
+    }
+  }
+
+  function toggleDrop(lang: string) {
+    setDropLangs((cur) => {
+      const next = new Set(cur)
+      if (next.has(lang)) next.delete(lang)
+      else next.add(lang)
+      return next
+    })
+    setPlan(null)
+    setStripReport(null)
+  }
+
+  async function runPlan() {
+    if (!path || dropLangs.size === 0) return
+    setPlanning(true)
+    setError(null)
+    setStripReport(null)
+    try {
+      const p = await invoke<StripPlan>('plan_strip', {
+        path,
+        dropLanguages: Array.from(dropLangs),
+      })
+      setPlan(p)
+    } catch (e) {
+      setError(String(e))
+    } finally {
+      setPlanning(false)
+    }
+  }
+
+  async function applyStrip() {
+    if (!path || dropLangs.size === 0 || !plan) return
+    const summary =
+      `About to drop ${dropLangs.size} language(s): ${Array.from(dropLangs).join(', ')}\n` +
+      `  ${plan.loose_files.length} loose files\n` +
+      `  ${plan.pak_changes.length} pak${plan.pak_changes.length === 1 ? '' : 's'} to rewrite/delete\n` +
+      `  ~${formatBytes(plan.total_loose_bytes)} loose savings (+ pak savings vary)\n\n` +
+      (backup
+        ? `Existing backup will record every change.`
+        : `A differential backup will be created at ${path}/../shrinkray_backup/ first.`) +
+      `\n\nContinue?`
+    if (!window.confirm(summary)) return
+
+    setApplying(true)
+    setError(null)
+    setStripReport(null)
+    try {
+      if (!backup) {
+        const fresh = await invoke<BackupStatus>('ensure_backup', { path })
+        setBackup(fresh)
+      }
+      const r = await invoke<StripReport>('apply_strip', {
+        path,
+        dropLanguages: Array.from(dropLangs),
+      })
+      setStripReport(r)
+      // Re-probe analysis + backup so the UI reflects the new state.
+      const fresh = await invoke<AnalysisReport>('analyze_folder', { path })
+      setReport(fresh)
+      const st = await invoke<BackupStatus | null>('backup_status', { path })
+      setBackup(st)
+      setPlan(null)
+    } catch (e) {
+      setError(String(e))
+    } finally {
+      setApplying(false)
     }
   }
 
@@ -96,7 +206,13 @@ export default function App() {
       ? Math.round((report.estimated_l10n_savings / report.total_size) * 100)
       : 0
 
-  const languages = report ? Object.entries(report.languages).sort((a, b) => b[1].size - a[1].size) : []
+  const languages = useMemo(
+    () =>
+      report
+        ? Object.entries(report.languages).sort((a, b) => b[1].size - a[1].size)
+        : [],
+    [report],
+  )
   const largestLang = languages[0]?.[0]
   const inv = report?.pak_inventory
 
@@ -104,7 +220,7 @@ export default function App() {
     <main className="layout">
       <header>
         <h1>shrinkray</h1>
-        <span className="muted">UE game folder optimizer · v0.0.2 · analysis + restore</span>
+        <span className="muted">UE game folder optimizer · v0.1.0 · l10n strip + pak trim</span>
       </header>
 
       <section className="drop">
@@ -128,7 +244,7 @@ export default function App() {
 
       {backup && (
         <section className="report backup-card">
-          <h2>Backup detected</h2>
+          <h2>Backup</h2>
           <table>
             <tbody>
               <Row label="created" value={formatTimestamp(backup.created_at)} />
@@ -157,11 +273,6 @@ export default function App() {
                       <span className="muted small"> — {f.reason}</span>
                     </li>
                   ))}
-                  {restore.failures.length > 10 && (
-                    <li className="muted small">
-                      …and {restore.failures.length - 10} more
-                    </li>
-                  )}
                 </ul>
               )}
             </div>
@@ -197,29 +308,141 @@ export default function App() {
               )}
             </tbody>
           </table>
-          {languages.length > 1 && (
-            <p className="muted small" style={{ marginTop: '0.6rem' }}>
-              Ceiling assumes you keep only the largest detected language ({largestLang}).
-              Real savings depend on which languages you actually strip in step 3.
-            </p>
-          )}
 
           {languages.length > 0 && (
             <>
-              <h2 style={{ marginTop: '1.6rem' }}>Languages detected ({languages.length})</h2>
+              <h2 style={{ marginTop: '1.6rem' }}>
+                Languages — pick which to drop ({languages.length} detected)
+              </h2>
               <table>
                 <tbody>
-                  {languages.map(([code, cat]) => (
-                    <Row
-                      key={code}
-                      label={code === largestLang ? `${code}  (largest)` : code}
-                      value={`${cat.count.toLocaleString()} files · ${formatBytes(cat.size)}`}
-                      accent={code === largestLang}
-                    />
-                  ))}
+                  {languages.map(([code, cat]) => {
+                    const dropping = dropLangs.has(code)
+                    return (
+                      <tr key={code} className={dropping ? 'dropping' : ''}>
+                        <td>
+                          <label className="lang-row">
+                            <input
+                              type="checkbox"
+                              checked={dropping}
+                              onChange={() => toggleDrop(code)}
+                              disabled={applying}
+                            />
+                            <span className={code === largestLang ? 'accent' : ''}>
+                              drop {code}
+                              {code === largestLang ? '  (largest — keep?)' : ''}
+                            </span>
+                          </label>
+                        </td>
+                        <td>
+                          {cat.count.toLocaleString()} files · {formatBytes(cat.size)}
+                        </td>
+                      </tr>
+                    )
+                  })}
                 </tbody>
               </table>
+              <div className="actions" style={{ marginTop: '0.9rem' }}>
+                <button
+                  onClick={runPlan}
+                  disabled={planning || applying || dropLangs.size === 0}
+                >
+                  {planning ? 'planning…' : 'preview'}
+                </button>
+                <button
+                  className="primary destructive"
+                  onClick={applyStrip}
+                  disabled={applying || dropLangs.size === 0 || !plan}
+                  title={!plan ? 'preview first' : ''}
+                >
+                  {applying
+                    ? 'applying…'
+                    : backup
+                      ? 'apply (write to backup + folder)'
+                      : 'apply (create backup + write)'}
+                </button>
+              </div>
             </>
+          )}
+
+          {plan && (
+            <section className="plan-card">
+              <h2 style={{ marginTop: '1.6rem' }}>
+                Plan — drop {plan.drop_languages.join(', ')}
+              </h2>
+              <table>
+                <tbody>
+                  <Row
+                    label="loose files to delete"
+                    value={`${plan.loose_files.length.toLocaleString()} · ${formatBytes(plan.total_loose_bytes)}`}
+                    accent
+                  />
+                  <Row
+                    label="paks to rewrite or delete"
+                    value={plan.pak_changes.length.toLocaleString()}
+                    accent={plan.pak_changes.length > 0}
+                  />
+                  {plan.skipped_signed_paks.length > 0 && (
+                    <Row
+                      label="signed paks skipped"
+                      value={plan.skipped_signed_paks.length.toLocaleString()}
+                    />
+                  )}
+                  {plan.skipped_encrypted_paks.length > 0 && (
+                    <Row
+                      label="encrypted paks skipped"
+                      value={plan.skipped_encrypted_paks.length.toLocaleString()}
+                    />
+                  )}
+                </tbody>
+              </table>
+            </section>
+          )}
+
+          {stripReport && (
+            <section className="plan-card">
+              <h2 style={{ marginTop: '1.6rem' }}>Strip applied</h2>
+              <table>
+                <tbody>
+                  <Row
+                    label="loose files deleted"
+                    value={stripReport.deleted_files.length.toLocaleString()}
+                    accent
+                  />
+                  <Row
+                    label="paks rewritten"
+                    value={stripReport.rewritten_paks.length.toLocaleString()}
+                    accent
+                  />
+                  <Row
+                    label="paks deleted (became empty)"
+                    value={stripReport.deleted_paks.length.toLocaleString()}
+                    accent={stripReport.deleted_paks.length > 0}
+                  />
+                  <Row
+                    label="bytes saved"
+                    value={formatBytes(stripReport.total_bytes_saved)}
+                    accent
+                  />
+                  {stripReport.failures.length > 0 && (
+                    <Row
+                      label="failures"
+                      value={stripReport.failures.length.toLocaleString()}
+                    />
+                  )}
+                </tbody>
+              </table>
+              {stripReport.failures.length > 0 && (
+                <ul className="reasons">
+                  {stripReport.failures.slice(0, 10).map((f) => (
+                    <li key={f.path} className="err">
+                      <span className="path-small">{f.path}</span>
+                      <span className="muted small"> — {f.reason}</span>
+                    </li>
+                  ))}
+                </ul>
+              )}
+            </section>
           )}
 
           {inv && report.paks.count > 0 && (
