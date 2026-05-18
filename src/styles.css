@@ -140,3 +140,12 @@ details summary {
   cursor: pointer;
   user-select: none;
 }
+
+.layout {
+  grid-template-rows: auto auto auto 1fr;
+}
+
+.backup-card {
+  border-color: rgba(255, 138, 61, 0.35);
+}
+.backup-card h2 { color: var(--accent); }

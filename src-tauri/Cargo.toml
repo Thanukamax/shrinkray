@@ -32,6 +32,7 @@ thiserror = "2"
 # UE pak read — pinned to git v0.2.3, crates.io is stuck at 0.1.0.
 # See research/A_pak_iostore.md for why we need 0.2.x.
 repak = { git = "https://github.com/trumank/repak", rev = "e215472c51db69328b1ce77be2db24d24c1d646b" }
+sha2 = "0.10"  # SHA256 of backup payloads + post-restore verification
 
 # Later-step deps (uncomment when implementation lands):
 # image         = "0.25"  # texture decode (PNG/TGA/DDS) — Step 4
