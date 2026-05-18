@@ -1,0 +1,46 @@
+[package]
+name = "shrinkray"
+version = "0.1.0"
+description = "Cut Unreal Engine game folder size by astronomical amounts"
+authors = ["Thanukamax"]
+license = "MIT"
+edition = "2021"
+rust-version = "1.77"
+
+[lib]
+name = "shrinkray_lib"
+crate-type = ["staticlib", "cdylib", "rlib"]
+
+[[bin]]
+name = "shrinkray"
+path = "src/main.rs"
+
+[build-dependencies]
+tauri-build = { version = "2", features = [] }
+
+[dependencies]
+tauri = { version = "2", features = ["devtools"] }
+tauri-plugin-dialog = "2"
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+walkdir = "2"
+anyhow = "1"
+thiserror = "2"
+
+# Phase 1 deps (uncomment when implementation lands):
+# repak       = "0.2"     # UE pak read/write
+# image       = "0.25"    # texture decode (PNG/TGA/DDS)
+# intel_tex_2 = "0.4"     # BC1/3/7 encode (ISPC-backed)
+# symphonia   = { version = "0.5", features = ["all"] }  # audio decode
+# opus        = "0.3"     # audio re-encode
+# rayon       = "1"       # parallel asset processing
+
+[profile.dev]
+incremental = true
+
+[profile.release]
+codegen-units = 1
+lto = true
+opt-level = "s"
+panic = "abort"
+strip = true

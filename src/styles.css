@@ -1,0 +1,102 @@
+:root {
+  --bg: #0a0a0c;
+  --fg: #e8e8f0;
+  --muted: rgba(232, 232, 240, 0.55);
+  --accent: #ff8a3d;
+  --err: #ff5577;
+  --line: rgba(255, 255, 255, 0.08);
+  --surface: rgba(255, 255, 255, 0.03);
+  font-family: ui-monospace, 'JetBrains Mono', 'SF Mono', Menlo, Consolas, monospace;
+  color-scheme: dark;
+}
+
+* { box-sizing: border-box; margin: 0; padding: 0; }
+
+html, body, #root { height: 100%; background: var(--bg); color: var(--fg); }
+
+.layout {
+  display: grid;
+  grid-template-rows: auto auto 1fr;
+  height: 100vh;
+  padding: 1.2rem 1.6rem;
+  gap: 1.6rem;
+}
+
+header { display: flex; align-items: baseline; gap: 1rem; }
+header h1 { font-size: 1rem; letter-spacing: 0.05em; font-weight: 500; }
+.muted { color: var(--muted); font-size: 0.72rem; }
+.small { font-size: 0.7rem; }
+
+.drop {
+  background: var(--surface);
+  border: 1px dashed var(--line);
+  border-radius: 4px;
+  padding: 1.4rem;
+  display: flex;
+  flex-direction: column;
+  gap: 0.9rem;
+}
+.placeholder { color: var(--muted); }
+.path {
+  font-size: 0.8rem;
+  color: var(--fg);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.actions { display: flex; gap: 0.6rem; }
+
+button {
+  background: transparent;
+  color: var(--fg);
+  border: 1px solid var(--line);
+  border-radius: 2px;
+  padding: 0.45rem 0.9rem;
+  font-family: inherit;
+  font-size: 0.72rem;
+  letter-spacing: 0.1em;
+  text-transform: uppercase;
+  cursor: pointer;
+  transition: border-color 150ms ease, color 150ms ease, background 150ms ease;
+}
+button:hover:not(:disabled) { border-color: var(--fg); }
+button.primary {
+  background: var(--accent);
+  color: #000;
+  border-color: var(--accent);
+}
+button.primary:hover:not(:disabled) { filter: brightness(1.1); }
+button:disabled { opacity: 0.5; cursor: not-allowed; }
+
+.report {
+  background: var(--surface);
+  border: 1px solid var(--line);
+  border-radius: 4px;
+  padding: 1.2rem 1.4rem;
+  overflow-y: auto;
+}
+.report h2 {
+  font-size: 0.75rem;
+  letter-spacing: 0.18em;
+  text-transform: uppercase;
+  color: var(--muted);
+  margin-bottom: 0.9rem;
+}
+.report table {
+  width: 100%;
+  border-collapse: collapse;
+  font-size: 0.78rem;
+}
+.report td {
+  padding: 0.45rem 0;
+  border-bottom: 1px dotted var(--line);
+}
+.report td:first-child { color: var(--muted); }
+.report td:last-child { text-align: right; font-variant-numeric: tabular-nums; }
+.report td.accent { color: var(--accent); }
+
+.err {
+  color: var(--err);
+  font-size: 0.75rem;
+  white-space: pre-wrap;
+}
