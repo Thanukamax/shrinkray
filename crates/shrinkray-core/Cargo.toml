@@ -1,0 +1,20 @@
+[package]
+name = "shrinkray-core"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+authors.workspace = true
+description = "Core logic for shrinkray: analyze, backup, pak ops, L10N strip, loose-file recompression"
+
+[dependencies]
+serde.workspace = true
+serde_json.workspace = true
+walkdir.workspace = true
+anyhow.workspace = true
+thiserror.workspace = true
+sha2.workspace = true
+repak.workspace = true
+
+[dev-dependencies]
+tempfile.workspace = true

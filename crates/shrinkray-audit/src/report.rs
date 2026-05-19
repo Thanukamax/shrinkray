@@ -1,0 +1,351 @@
+//! Render an `AuditReport` to human-readable Markdown.
+//!
+//! JSON serialization is handled directly by serde on the types. Markdown
+//! is the format meant for sharing — what gets pasted into a tweet, a PR
+//! description, or a screenshot. Layout follows: headline metrics first,
+//! then findings grouped by severity descending, with evidence collapsed
+//! to the top items by size.
+
+use crate::types::{AuditReport, Category, Finding, Severity};
+use std::fmt::Write;
+
+/// Render the report as Markdown.
+pub fn render_markdown(report: &AuditReport) -> String {
+    let mut out = String::with_capacity(4096);
+
+    write_header(&mut out, report);
+    write_aggregate(&mut out, report);
+    write_findings_section(&mut out, report);
+    write_footer(&mut out, report);
+
+    out
+}
+
+fn write_header(out: &mut String, report: &AuditReport) {
+    writeln!(out, "# Bloat Audit").unwrap();
+    writeln!(out).unwrap();
+    writeln!(out, "**Target:** `{}`", report.root.display()).unwrap();
+    writeln!(out, "**Total size:** {}", format_bytes(report.total_size_bytes)).unwrap();
+    writeln!(
+        out,
+        "**Bloat score:** {}/100 ({})",
+        report.aggregate.bloat_score,
+        score_label(report.aggregate.bloat_score)
+    )
+    .unwrap();
+    if report.aggregate.total_reclaimable_bytes > 0 {
+        writeln!(
+            out,
+            "**Estimated reclaimable:** {} ({:.1}%)",
+            format_bytes(report.aggregate.total_reclaimable_bytes),
+            report.aggregate.total_reclaimable_pct
+        )
+        .unwrap();
+    }
+    writeln!(out).unwrap();
+}
+
+fn write_aggregate(out: &mut String, report: &AuditReport) {
+    if report.aggregate.reclaimable_by_category.is_empty() {
+        return;
+    }
+    writeln!(out, "## Reclaimable by category").unwrap();
+    writeln!(out).unwrap();
+    writeln!(out, "| Category | Estimated savings |").unwrap();
+    writeln!(out, "|---|---:|").unwrap();
+
+    let mut rows: Vec<(Category, u64)> = report
+        .aggregate
+        .reclaimable_by_category
+        .iter()
+        .map(|(c, b)| (*c, *b))
+        .collect();
+    rows.sort_by(|a, b| b.1.cmp(&a.1));
+    for (cat, bytes) in rows {
+        writeln!(out, "| {} | {} |", category_pretty(cat), format_bytes(bytes)).unwrap();
+    }
+    writeln!(out).unwrap();
+}
+
+fn write_findings_section(out: &mut String, report: &AuditReport) {
+    if report.findings.is_empty() {
+        writeln!(out, "## Findings").unwrap();
+        writeln!(out).unwrap();
+        writeln!(out, "_No findings — this install looks clean to shrinkray._").unwrap();
+        writeln!(out).unwrap();
+        return;
+    }
+
+    // Group by severity (Critical → Warning → Info).
+    for sev in [Severity::Critical, Severity::Warning, Severity::Info] {
+        let group: Vec<&Finding> = report
+            .findings
+            .iter()
+            .filter(|f| f.severity == sev)
+            .collect();
+        if group.is_empty() {
+            continue;
+        }
+
+        writeln!(out, "## {} findings ({})", severity_pretty(sev), group.len()).unwrap();
+        writeln!(out).unwrap();
+
+        for f in group {
+            write_one_finding(out, f);
+        }
+    }
+}
+
+fn write_one_finding(out: &mut String, f: &Finding) {
+    writeln!(out, "### [{}] {}", f.severity.label(), f.title).unwrap();
+    writeln!(out).unwrap();
+    writeln!(out, "**Category:** `{}` &nbsp;·&nbsp; **Detector:** `{}`", f.category.label(), f.detector)
+        .unwrap();
+    if let Some(bytes) = f.reclaimable_bytes {
+        writeln!(out, "**Reclaimable:** {}", format_bytes(bytes)).unwrap();
+    }
+    writeln!(out).unwrap();
+    writeln!(out, "{}", f.summary).unwrap();
+    writeln!(out).unwrap();
+
+    if !f.evidence.is_empty() {
+        let top = 5.min(f.evidence.len());
+        writeln!(out, "**Evidence:**").unwrap();
+        let mut sorted = f.evidence.clone();
+        sorted.sort_by(|a, b| b.size_bytes.cmp(&a.size_bytes));
+        for ev in sorted.iter().take(top) {
+            match &ev.note {
+                Some(n) => writeln!(
+                    out,
+                    "- `{}` — {} _{}_",
+                    ev.path.display(),
+                    format_bytes(ev.size_bytes),
+                    n
+                )
+                .unwrap(),
+                None => writeln!(
+                    out,
+                    "- `{}` — {}",
+                    ev.path.display(),
+                    format_bytes(ev.size_bytes)
+                )
+                .unwrap(),
+            }
+        }
+        if f.evidence.len() > top {
+            writeln!(out, "- _… and {} more_", f.evidence.len() - top).unwrap();
+        }
+        writeln!(out).unwrap();
+    }
+
+    writeln!(out, "**Recommendation:** {}", f.recommendation).unwrap();
+    writeln!(out).unwrap();
+}
+
+fn write_footer(out: &mut String, report: &AuditReport) {
+    writeln!(out, "---").unwrap();
+    writeln!(
+        out,
+        "_Generated by shrinkray-audit v{} at {} · {} detectors_",
+        report.meta.tool_version,
+        report.meta.generated_at,
+        report.meta.detectors.len()
+    )
+    .unwrap();
+}
+
+fn score_label(score: u8) -> &'static str {
+    match score {
+        0..=19 => "clean",
+        20..=49 => "mild",
+        50..=79 => "structural bloat",
+        _ => "severe",
+    }
+}
+
+fn severity_pretty(s: Severity) -> &'static str {
+    match s {
+        Severity::Critical => "Critical",
+        Severity::Warning => "Warning",
+        Severity::Info => "Info",
+    }
+}
+
+fn category_pretty(c: Category) -> &'static str {
+    match c {
+        Category::PatchOverlay => "Patch overlay accumulation",
+        Category::StaleVersionDir => "Stale version directories",
+        Category::ShardedVideos => "Sharded video paks",
+        Category::LargeChunk => "Oversized pak chunks",
+        Category::Encryption => "Pak encryption status",
+        Category::EditorLeftovers => "Editor leftovers",
+        Category::LauncherSatellite => "Launcher language satellites",
+        Category::ChunkingQuality => "Chunking strategy",
+    }
+}
+
+/// Human-friendly byte formatting (KB/MB/GB), 2 decimals when ≥ 1 unit.
+pub fn format_bytes(bytes: u64) -> String {
+    const KB: f64 = 1024.0;
+    const MB: f64 = KB * 1024.0;
+    const GB: f64 = MB * 1024.0;
+    const TB: f64 = GB * 1024.0;
+    let b = bytes as f64;
+    if b >= TB {
+        format!("{:.2} TB", b / TB)
+    } else if b >= GB {
+        format!("{:.2} GB", b / GB)
+    } else if b >= MB {
+        format!("{:.2} MB", b / MB)
+    } else if b >= KB {
+        format!("{:.2} KB", b / KB)
+    } else {
+        format!("{} B", bytes)
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::types::Evidence;
+    use std::path::PathBuf;
+
+    fn finding(
+        cat: Category,
+        sev: Severity,
+        title: &str,
+        bytes: Option<u64>,
+        evidence: Vec<Evidence>,
+    ) -> Finding {
+        Finding {
+            detector: "test".into(),
+            category: cat,
+            severity: sev,
+            title: title.into(),
+            summary: "summary line.".into(),
+            evidence,
+            reclaimable_bytes: bytes,
+            recommendation: "do the thing.".into(),
+        }
+    }
+
+    #[test]
+    fn format_bytes_units() {
+        assert_eq!(format_bytes(0), "0 B");
+        assert_eq!(format_bytes(500), "500 B");
+        assert_eq!(format_bytes(2 * 1024), "2.00 KB");
+        assert_eq!(format_bytes(5 * 1024 * 1024), "5.00 MB");
+        assert_eq!(format_bytes(125 * 1024 * 1024 * 1024), "125.00 GB");
+    }
+
+    #[test]
+    fn renders_empty_report() {
+        let r = AuditReport::assemble(PathBuf::from("/x"), 1000, vec![], vec!["a".into()]);
+        let md = render_markdown(&r);
+        assert!(md.contains("# Bloat Audit"));
+        assert!(md.contains("No findings"));
+        assert!(md.contains("Bloat score:** 0/100"));
+    }
+
+    #[test]
+    fn renders_finding_with_evidence() {
+        let ev = vec![
+            Evidence {
+                path: PathBuf::from("foo.pak"),
+                size_bytes: 9_000_000_000,
+                note: Some("shadows base 70".into()),
+            },
+            Evidence {
+                path: PathBuf::from("bar.pak"),
+                size_bytes: 1_000_000_000,
+                note: None,
+            },
+        ];
+        let r = AuditReport::assemble(
+            PathBuf::from("/x"),
+            100_000_000_000,
+            vec![finding(
+                Category::PatchOverlay,
+                Severity::Warning,
+                "patch overlay",
+                Some(10_000_000_000),
+                ev,
+            )],
+            vec!["test".into()],
+        );
+        let md = render_markdown(&r);
+        assert!(md.contains("## Warning findings (1)"));
+        assert!(md.contains("9.31 GB") || md.contains("8.38 GB")); // 9_000_000_000 bytes ≈ 8.38 GiB
+        assert!(md.contains("shadows base 70"));
+        assert!(md.contains("Recommendation"));
+    }
+
+    #[test]
+    fn truncates_long_evidence_lists() {
+        let ev: Vec<Evidence> = (0..20)
+            .map(|i| Evidence {
+                path: PathBuf::from(format!("f{}.pak", i)),
+                size_bytes: 100 * (i as u64 + 1),
+                note: None,
+            })
+            .collect();
+        let r = AuditReport::assemble(
+            PathBuf::from("/x"),
+            10_000,
+            vec![finding(
+                Category::PatchOverlay,
+                Severity::Warning,
+                "many",
+                Some(1000),
+                ev,
+            )],
+            vec!["t".into()],
+        );
+        let md = render_markdown(&r);
+        assert!(md.contains("_… and 15 more_"));
+    }
+
+    #[test]
+    fn groups_by_severity_in_order() {
+        let r = AuditReport::assemble(
+            PathBuf::from("/x"),
+            100,
+            vec![
+                finding(Category::PatchOverlay, Severity::Info, "i", None, vec![]),
+                finding(
+                    Category::ChunkingQuality,
+                    Severity::Critical,
+                    "c",
+                    None,
+                    vec![],
+                ),
+                finding(
+                    Category::StaleVersionDir,
+                    Severity::Warning,
+                    "w",
+                    None,
+                    vec![],
+                ),
+            ],
+            vec!["t".into()],
+        );
+        let md = render_markdown(&r);
+        let crit_pos = md.find("## Critical findings").unwrap();
+        let warn_pos = md.find("## Warning findings").unwrap();
+        let info_pos = md.find("## Info findings").unwrap();
+        assert!(crit_pos < warn_pos);
+        assert!(warn_pos < info_pos);
+    }
+
+    #[test]
+    fn score_label_buckets() {
+        assert_eq!(score_label(0), "clean");
+        assert_eq!(score_label(19), "clean");
+        assert_eq!(score_label(20), "mild");
+        assert_eq!(score_label(49), "mild");
+        assert_eq!(score_label(50), "structural bloat");
+        assert_eq!(score_label(79), "structural bloat");
+        assert_eq!(score_label(80), "severe");
+        assert_eq!(score_label(100), "severe");
+    }
+}

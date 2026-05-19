@@ -76,29 +76,35 @@ bun run tauri dev                    # window at localhost:1420
 bun run tauri build                  # production binary
 ```
 
-The current build (v0.3.0) does:
+The current build (v0.4.0-dev) does:
 - **analyze** — folder census + L10N detection + pak inventory (signed/encrypted/readable) + top 50 fattest files
+- **bloat audit** *(new in v0.4)* — read-only multi-detector report surfacing structural inefficiencies: patch overlay accumulation, stale version directories, sharded video paks, oversized chunks, encryption status, editor leftovers, launcher language satellites. Works on encrypted installs (where content surgery is impossible). 0-100 bloat score + Markdown/JSON output.
 - **L10N strip + pak trim** — drop dub languages from loose files and from inside paks
 - **loose-file recompression** — PNG via `oxipng`, WAV/FLAC → Opus via `opusenc` (both detected at runtime, install hints surfaced if missing)
 - **differential backup + restore** — every destructive op is preceded by a `shrinkray_backup/` entry; restore replays the manifest in reverse with hash verification
 - **preview-only mode** — default-on for first-time users; hard-disables every apply button
+- **CLI** *(new in v0.4)* — `shrinkray audit <path> [--json] [--out FILE]`. Run from a terminal, share the markdown output, paste it into a bug report.
 
 System tool deps (Linux): `opus-tools` (for `opusenc`), optionally `oxipng` (install via `cargo install oxipng` or your distro).
 
 ## Layout
 
 ```
-src/                   # React frontend
-src-tauri/src/
-  lib.rs               # Tauri commands
-  analyze.rs           # folder census + L10N detection (step 1)
-  pak.rs               # repak wrapper + pak classification
-  backup.rs            # differential backup + restore (step 2)
-  strip.rs             # L10N stripping + pak trimming (step 3)
-  recompress.rs        # PNG/WAV/FLAC recompression via shell-outs (step 4)
-research/              # research notes (A-E + SUMMARY) — read before contributing
-scripts/               # generate_icons.py, lyra-smoke.sh
-.github/workflows/     # CI (cargo test + clippy + bun build)
+src/                                # React frontend
+crates/
+  shrinkray-core/src/               # destructive-write subsystems
+    analyze.rs                      # folder census + L10N detection
+    pak.rs                          # repak wrapper + pak classification
+    backup.rs                       # differential backup + restore
+    strip.rs                        # L10N stripping + pak trimming
+    recompress.rs                   # PNG/WAV/FLAC recompression via shell-outs
+  shrinkray-audit/src/              # read-only bloat audit (v0.4)
+  shrinkray-cli/src/                # CLI binary — `shrinkray audit|analyze|...`
+src-tauri/src/                      # thin Tauri wrapper around core+audit
+  lib.rs                            # tauri::commands wiring
+research/                           # research notes (A-E + SUMMARY) — read before contributing
+scripts/                            # generate_icons.py, lyra-smoke.sh
+.github/workflows/                  # CI (cargo test + clippy + bun build)
 ```
 
 ## Validation against real games

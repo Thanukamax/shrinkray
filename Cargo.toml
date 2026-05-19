@@ -1,0 +1,41 @@
+[workspace]
+resolver = "2"
+members = [
+    "crates/shrinkray-core",
+    "crates/shrinkray-audit",
+    "crates/shrinkray-cli",
+    "src-tauri",
+]
+
+[workspace.package]
+version = "0.4.0-dev"
+edition = "2021"
+rust-version = "1.77"
+license = "MIT"
+authors = ["Thanukamax"]
+
+[workspace.dependencies]
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+walkdir = "2"
+anyhow = "1"
+thiserror = "2"
+sha2 = "0.10"
+tempfile = "3"
+clap = { version = "4", features = ["derive"] }
+# UE pak read — pinned to git v0.2.3, crates.io is stuck at 0.1.0.
+# See research/A_pak_iostore.md for why we need 0.2.x.
+repak = { git = "https://github.com/trumank/repak", rev = "e215472c51db69328b1ce77be2db24d24c1d646b" }
+
+shrinkray-core = { path = "crates/shrinkray-core" }
+shrinkray-audit = { path = "crates/shrinkray-audit" }
+
+[profile.dev]
+incremental = true
+
+[profile.release]
+codegen-units = 1
+lto = true
+opt-level = "s"
+panic = "abort"
+strip = true

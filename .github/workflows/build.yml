@@ -33,20 +33,16 @@ jobs:
       - uses: oven-sh/setup-bun@v1
 
       - uses: Swatinem/rust-cache@v2
-        with:
-          workspaces: src-tauri
 
       - name: Install frontend deps
         run: bun install
 
       - name: Cargo clippy (warnings allowed for now)
-        working-directory: src-tauri
-        run: cargo clippy --lib --tests --no-deps
+        run: cargo clippy --workspace --lib --tests --no-deps
         continue-on-error: true
 
       - name: Cargo test
-        working-directory: src-tauri
-        run: cargo test --lib
+        run: cargo test --workspace --lib
 
       - name: Frontend type check + build
         run: bun run build
