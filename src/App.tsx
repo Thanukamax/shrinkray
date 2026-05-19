@@ -538,11 +538,21 @@ export default function App() {
             </tbody>
           </table>
 
-          {languages.length > 0 && (
+          <h2 style={{ marginTop: '1.6rem' }}>
+            {languages.length > 0
+              ? `Languages — pick which to drop (${languages.length} detected)`
+              : 'L10N strip'}
+          </h2>
+          {languages.length === 0 ? (
+            <p className="muted">
+              No L10N folders detected on this install — nothing to strip.
+              shrinkray looks for BCP-47-style language codes (e.g.{' '}
+              <code>Lang_en</code>, <code>L10N/de</code>, <code>fr-FR</code>) in
+              loose paths and inside paks. Single-language games and tightly
+              cooked indies will land here.
+            </p>
+          ) : (
             <>
-              <h2 style={{ marginTop: '1.6rem' }}>
-                Languages — pick which to drop ({languages.length} detected)
-              </h2>
               <table>
                 <tbody>
                   {languages.map(([code, cat]) => {
