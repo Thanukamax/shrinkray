@@ -12,6 +12,7 @@
   "app": {
     "windows": [
       {
+        "label": "main",
         "title": "shrinkray",
         "width": 1100,
         "height": 720,
@@ -36,7 +37,5 @@
       "icons/icon.ico"
     ]
   },
-  "plugins": {
-    "dialog": {}
-  }
+  "plugins": {}
 }

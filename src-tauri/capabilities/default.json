@@ -1,0 +1,10 @@
+{
+  "$schema": "../gen/schemas/desktop-schema.json",
+  "identifier": "default",
+  "description": "Default capabilities for shrinkray's main window: core APIs + dialog plugin (folder picker). Custom #[tauri::command] handlers are implicitly allowed by Tauri v2.",
+  "windows": ["main"],
+  "permissions": [
+    "core:default",
+    "dialog:default"
+  ]
+}
