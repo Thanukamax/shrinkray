@@ -17,3 +17,6 @@ shrinkray-audit.workspace = true
 clap.workspace = true
 serde_json.workspace = true
 anyhow.workspace = true
+
+[dev-dependencies]
+tempfile.workspace = true

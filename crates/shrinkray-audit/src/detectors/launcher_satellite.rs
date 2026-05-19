@@ -40,7 +40,6 @@ impl Detector for LauncherSatelliteDetector {
 
 #[derive(Debug)]
 struct SatelliteGroup {
-    parent: PathBuf,
     satellites: Vec<Satellite>,
 }
 
@@ -87,12 +86,12 @@ fn find_satellite_groups(root: &Path) -> Vec<SatelliteGroup> {
     }
 
     by_parent
-        .into_iter()
-        .filter_map(|(parent, satellites)| {
+        .into_values()
+        .filter_map(|satellites| {
             if satellites.len() < MIN_SATELLITE_SIBLINGS {
                 None
             } else {
-                Some(SatelliteGroup { parent, satellites })
+                Some(SatelliteGroup { satellites })
             }
         })
         .collect()

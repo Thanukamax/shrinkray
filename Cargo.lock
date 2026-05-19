@@ -2990,6 +2990,7 @@ dependencies = [
  "serde_json",
  "shrinkray-audit",
  "shrinkray-core",
+ "tempfile",
 ]
 
 [[package]]

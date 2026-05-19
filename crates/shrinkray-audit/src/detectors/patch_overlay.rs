@@ -46,7 +46,6 @@ impl Detector for PatchOverlayDetector {
 
 #[derive(Debug)]
 struct PakEntry {
-    path: PathBuf,
     rel_path: PathBuf,
     chunk_id: String,
     is_patch: bool,
@@ -77,10 +76,9 @@ fn walk_pak_inventory(root: &Path) -> Vec<PakEntry> {
             continue;
         };
         let size_bytes = entry.metadata().map(|m| m.len()).unwrap_or(0);
-        let path = entry.path().to_path_buf();
-        let rel_path = path.strip_prefix(root).unwrap_or(&path).to_path_buf();
+        let path = entry.path();
+        let rel_path = path.strip_prefix(root).unwrap_or(path).to_path_buf();
         out.push(PakEntry {
-            path,
             rel_path,
             chunk_id,
             is_patch,

@@ -21,7 +21,6 @@ use super::Detector;
 use crate::report::format_bytes;
 use crate::types::{Category, Evidence, Finding, Severity};
 use std::collections::BTreeMap;
-use std::fs;
 use std::path::{Path, PathBuf};
 use walkdir::WalkDir;
 
