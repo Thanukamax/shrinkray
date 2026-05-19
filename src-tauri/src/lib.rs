@@ -1,13 +1,7 @@
-mod analyze;
-mod audio;
-mod backup;
-mod pak;
-mod recompress;
-mod strip;
-mod texture;
-
 use std::collections::HashSet;
 use std::path::PathBuf;
+
+use shrinkray_core::{analyze, backup, recompress, strip};
 
 /// Step 1: extension-based folder census + L10N detection + pak classification.
 #[tauri::command]

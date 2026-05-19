@@ -88,17 +88,21 @@ System tool deps (Linux): `opus-tools` (for `opusenc`), optionally `oxipng` (ins
 ## Layout
 
 ```
-src/                   # React frontend
-src-tauri/src/
-  lib.rs               # Tauri commands
-  analyze.rs           # folder census + L10N detection (step 1)
-  pak.rs               # repak wrapper + pak classification
-  backup.rs            # differential backup + restore (step 2)
-  strip.rs             # L10N stripping + pak trimming (step 3)
-  recompress.rs        # PNG/WAV/FLAC recompression via shell-outs (step 4)
-research/              # research notes (A-E + SUMMARY) — read before contributing
-scripts/               # generate_icons.py, lyra-smoke.sh
-.github/workflows/     # CI (cargo test + clippy + bun build)
+src/                                # React frontend
+crates/
+  shrinkray-core/src/               # destructive-write subsystems
+    analyze.rs                      # folder census + L10N detection
+    pak.rs                          # repak wrapper + pak classification
+    backup.rs                       # differential backup + restore
+    strip.rs                        # L10N stripping + pak trimming
+    recompress.rs                   # PNG/WAV/FLAC recompression via shell-outs
+  shrinkray-audit/src/              # read-only bloat audit (v0.4)
+  shrinkray-cli/src/                # CLI binary — `shrinkray audit|analyze|...`
+src-tauri/src/                      # thin Tauri wrapper around core+audit
+  lib.rs                            # tauri::commands wiring
+research/                           # research notes (A-E + SUMMARY) — read before contributing
+scripts/                            # generate_icons.py, lyra-smoke.sh
+.github/workflows/                  # CI (cargo test + clippy + bun build)
 ```
 
 ## Validation against real games

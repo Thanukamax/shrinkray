@@ -3,8 +3,10 @@ dist/
 .vite/
 *.log
 
-src-tauri/target/
-src-tauri/Cargo.lock
+# Cargo workspace build output (workspace-root target dir, post-v0.4 refactor)
+/target/
+
+# Tauri generated bindings
 src-tauri/gen/
 
 .vscode/
