@@ -197,8 +197,9 @@ fn aggregate_findings(total_size_bytes: u64, findings: &[Finding]) -> Aggregate 
 /// - 80-100 = severely bloated install or design failure (WuWa territory).
 ///
 /// Formula: 2× reclaimable % (cap 60), plus +10 per critical finding (cap +30),
-/// plus +10 when any non-informational encryption finding is present (locks
-/// future content-level optimization).
+/// plus +10 when any non-informational pak-access finding is present
+/// (encryption, IoStore, signing, or unknown format — each locks
+/// future content-level optimization on the affected paks).
 fn compute_bloat_score(reclaimable_pct: f64, findings: &[Finding]) -> u8 {
     let base = (reclaimable_pct * 2.0).min(60.0);
 
