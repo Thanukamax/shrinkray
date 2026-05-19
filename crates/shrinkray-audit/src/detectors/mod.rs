@@ -9,6 +9,7 @@
 pub mod editor_leftovers;
 pub mod encryption;
 pub mod large_chunks;
+pub mod launcher_satellite;
 pub mod patch_overlay;
 pub mod sharded_videos;
 pub mod stale_versions;
