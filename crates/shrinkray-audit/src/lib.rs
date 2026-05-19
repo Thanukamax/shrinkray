@@ -18,7 +18,10 @@ use walkdir::WalkDir;
 
 /// Default detector roster. Order is stable so report grouping is deterministic.
 pub fn default_detectors() -> Vec<Box<dyn Detector>> {
-    vec![Box::new(detectors::patch_overlay::PatchOverlayDetector)]
+    vec![
+        Box::new(detectors::patch_overlay::PatchOverlayDetector),
+        Box::new(detectors::stale_versions::StaleVersionDirDetector),
+    ]
 }
 
 /// Audit the given root with the default detector roster. The audit never
@@ -118,12 +121,15 @@ mod tests {
             .unwrap();
 
         let r = audit(tmp.path()).unwrap();
-        assert_eq!(r.findings.len(), 1);
-        assert_eq!(r.findings[0].category, Category::PatchOverlay);
+        let overlay_findings: Vec<&Finding> = r
+            .findings
+            .iter()
+            .filter(|f| f.category == Category::PatchOverlay)
+            .collect();
+        assert_eq!(overlay_findings.len(), 1);
         assert_eq!(r.aggregate.total_reclaimable_bytes, 1024);
-        assert_eq!(
-            r.meta.detectors,
-            vec!["patch_overlay".to_string()],
+        assert!(
+            r.meta.detectors.contains(&"patch_overlay".to_string()),
             "detector name surfaces in metadata"
         );
     }

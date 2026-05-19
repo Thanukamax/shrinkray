@@ -7,6 +7,7 @@
 //! 3. Register it in the `default_detectors()` list in `lib.rs`.
 
 pub mod patch_overlay;
+pub mod stale_versions;
 
 use crate::types::Finding;
 use std::path::Path;
