@@ -6,7 +6,9 @@
 //! 2. Re-export it here.
 //! 3. Register it in the `default_detectors()` list in `lib.rs`.
 
+pub mod large_chunks;
 pub mod patch_overlay;
+pub mod sharded_videos;
 pub mod stale_versions;
 
 use crate::types::Finding;

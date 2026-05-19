@@ -21,6 +21,8 @@ pub fn default_detectors() -> Vec<Box<dyn Detector>> {
     vec![
         Box::new(detectors::patch_overlay::PatchOverlayDetector),
         Box::new(detectors::stale_versions::StaleVersionDirDetector),
+        Box::new(detectors::sharded_videos::ShardedVideosDetector),
+        Box::new(detectors::large_chunks::LargeChunkDetector),
     ]
 }
 
