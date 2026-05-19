@@ -130,6 +130,67 @@ type RecompressReport = {
   total_bytes_saved: number
 }
 
+type AuditSeverity = 'info' | 'warning' | 'critical'
+type AuditCategory =
+  | 'patch_overlay'
+  | 'stale_version_dir'
+  | 'sharded_videos'
+  | 'large_chunk'
+  | 'encryption'
+  | 'editor_leftovers'
+  | 'launcher_satellite'
+  | 'chunking_quality'
+type AuditEvidence = { path: string; size_bytes: number; note?: string }
+type AuditFinding = {
+  detector: string
+  category: AuditCategory
+  severity: AuditSeverity
+  title: string
+  summary: string
+  evidence: AuditEvidence[]
+  reclaimable_bytes?: number
+  recommendation: string
+}
+type AuditAggregate = {
+  total_findings: number
+  findings_by_severity: Partial<Record<AuditSeverity, number>>
+  reclaimable_by_category: Partial<Record<AuditCategory, number>>
+  total_reclaimable_bytes: number
+  total_reclaimable_pct: number
+  bloat_score: number
+}
+type AuditMeta = {
+  schema_version: number
+  tool_version: string
+  generated_at: string
+  detectors: string[]
+}
+type AuditReport = {
+  root: string
+  total_size_bytes: number
+  findings: AuditFinding[]
+  aggregate: AuditAggregate
+  meta: AuditMeta
+}
+
+const CATEGORY_LABEL: Record<AuditCategory, string> = {
+  patch_overlay: 'Patch overlay accumulation',
+  stale_version_dir: 'Stale version directories',
+  sharded_videos: 'Sharded video paks',
+  large_chunk: 'Oversized pak chunks',
+  encryption: 'Pak encryption status',
+  editor_leftovers: 'Editor leftovers',
+  launcher_satellite: 'Launcher language satellites',
+  chunking_quality: 'Chunking strategy',
+}
+
+function scoreLabel(score: number): string {
+  if (score < 20) return 'clean'
+  if (score < 50) return 'mild'
+  if (score < 80) return 'structural bloat'
+  return 'severe'
+}
+
 export default function App() {
   const [path, setPath] = useState<string | null>(null)
   const [report, setReport] = useState<AnalysisReport | null>(null)
@@ -147,6 +208,8 @@ export default function App() {
   const [recompressReport, setRecompressReport] = useState<RecompressReport | null>(null)
   const [planningRecompress, setPlanningRecompress] = useState(false)
   const [recompressing, setRecompressing] = useState(false)
+  const [auditing, setAuditing] = useState(false)
+  const [audit, setAudit] = useState<AuditReport | null>(null)
   const [previewOnly, setPreviewOnly] = useState<boolean>(() => loadPreviewOnly())
   const [error, setError] = useState<string | null>(null)
 
@@ -161,6 +224,7 @@ export default function App() {
     setStripReport(null)
     setRecompressPlan(null)
     setRecompressReport(null)
+    setAudit(null)
     setDropLangs(new Set())
     const sel = await open({ directory: true, multiple: false, title: 'Pick a game folder' })
     if (typeof sel === 'string') {
@@ -172,6 +236,20 @@ export default function App() {
       ])
       setBackup(st)
       setEncoders(encs)
+    }
+  }
+
+  async function runAudit() {
+    if (!path) return
+    setAuditing(true)
+    setError(null)
+    try {
+      const r = await invoke<AuditReport>('audit_folder', { path })
+      setAudit(r)
+    } catch (e) {
+      setError(String(e))
+    } finally {
+      setAuditing(false)
     }
   }
 
@@ -347,7 +425,7 @@ export default function App() {
     <main className="layout">
       <header>
         <h1>shrinkray</h1>
-        <span className="muted">UE game folder optimizer · v0.3.0</span>
+        <span className="muted">UE game folder optimizer · v0.4.0-dev</span>
         <span className={`mode-badge ${previewOnly ? 'mode-preview' : 'mode-write'}`}>
           {previewOnly ? 'preview' : 'WRITE'}
         </span>
@@ -382,9 +460,16 @@ export default function App() {
               {pending ? 'analyzing…' : 'analyze'}
             </button>
           )}
+          {path && (
+            <button onClick={runAudit} disabled={auditing}>
+              {auditing ? 'auditing…' : 'bloat audit'}
+            </button>
+          )}
         </div>
         {error && <p className="err">{error}</p>}
       </section>
+
+      {audit && <AuditCard report={audit} />}
 
       {backup && (
         <section className="report backup-card">
@@ -822,6 +907,139 @@ function Row({
       <td className={accent ? 'accent' : ''}>{value}</td>
     </tr>
   )
+}
+
+function AuditCard({ report }: { report: AuditReport }) {
+  const ag = report.aggregate
+  const grouped: Record<AuditSeverity, AuditFinding[]> = {
+    critical: [],
+    warning: [],
+    info: [],
+  }
+  for (const f of report.findings) grouped[f.severity].push(f)
+
+  const reclaimableRows = Object.entries(ag.reclaimable_by_category)
+    .filter(([, v]) => (v ?? 0) > 0)
+    .sort((a, b) => (b[1] ?? 0) - (a[1] ?? 0))
+
+  return (
+    <section className="report audit-card">
+      <div className="audit-header">
+        <h2>Bloat Audit</h2>
+        <span className="muted small">
+          {report.meta.detectors.length} detectors · {report.findings.length} findings
+        </span>
+      </div>
+
+      <div className="score-row">
+        <div className={`score-pill score-${scoreBucket(ag.bloat_score)}`}>
+          <span className="score-value">{ag.bloat_score}</span>
+          <span className="score-out">/100</span>
+          <span className="score-label">{scoreLabel(ag.bloat_score)}</span>
+        </div>
+        <div className="score-side">
+          <div>
+            <span className="muted small">total</span>
+            <strong>{formatBytes(report.total_size_bytes)}</strong>
+          </div>
+          {ag.total_reclaimable_bytes > 0 && (
+            <div>
+              <span className="muted small">reclaimable</span>
+              <strong className="accent">
+                {formatBytes(ag.total_reclaimable_bytes)} ({ag.total_reclaimable_pct.toFixed(1)}%)
+              </strong>
+            </div>
+          )}
+        </div>
+      </div>
+
+      {reclaimableRows.length > 0 && (
+        <>
+          <h3 className="audit-h3">Reclaimable by category</h3>
+          <table>
+            <tbody>
+              {reclaimableRows.map(([cat, bytes]) => (
+                <tr key={cat}>
+                  <td>{CATEGORY_LABEL[cat as AuditCategory] ?? cat}</td>
+                  <td className="accent">{formatBytes(bytes ?? 0)}</td>
+                </tr>
+              ))}
+            </tbody>
+          </table>
+        </>
+      )}
+
+      {report.findings.length === 0 && (
+        <p className="muted" style={{ marginTop: '0.9rem' }}>
+          No findings — this install looks clean to shrinkray.
+        </p>
+      )}
+
+      {(['critical', 'warning', 'info'] as AuditSeverity[]).map((sev) =>
+        grouped[sev].length === 0 ? null : (
+          <div key={sev} className="finding-group">
+            <h3 className="audit-h3">
+              {sev[0].toUpperCase() + sev.slice(1)} findings ({grouped[sev].length})
+            </h3>
+            {grouped[sev].map((f, i) => (
+              <FindingCard key={`${sev}-${i}`} f={f} />
+            ))}
+          </div>
+        ),
+      )}
+    </section>
+  )
+}
+
+function FindingCard({ f }: { f: AuditFinding }) {
+  return (
+    <article className={`finding finding-${f.severity}`}>
+      <header className="finding-head">
+        <span className={`sev-pill sev-${f.severity}`}>{f.severity}</span>
+        <span className="finding-title">{f.title}</span>
+      </header>
+      <p className="finding-summary">{f.summary}</p>
+      {f.reclaimable_bytes != null && f.reclaimable_bytes > 0 && (
+        <p className="finding-meta">
+          <span className="muted small">reclaimable:</span>{' '}
+          <strong className="accent">{formatBytes(f.reclaimable_bytes)}</strong>
+        </p>
+      )}
+      {f.evidence.length > 0 && (
+        <details>
+          <summary className="muted small">
+            {f.evidence.length} evidence item{f.evidence.length === 1 ? '' : 's'}
+          </summary>
+          <ul className="reasons">
+            {f.evidence
+              .slice()
+              .sort((a, b) => b.size_bytes - a.size_bytes)
+              .slice(0, 8)
+              .map((ev) => (
+                <li key={ev.path}>
+                  <span className="path-small">{ev.path}</span>
+                  <span className="muted small"> — {formatBytes(ev.size_bytes)}</span>
+                  {ev.note && <span className="muted small"> · {ev.note}</span>}
+                </li>
+              ))}
+            {f.evidence.length > 8 && (
+              <li className="muted small">…and {f.evidence.length - 8} more</li>
+            )}
+          </ul>
+        </details>
+      )}
+      <p className="finding-rec">
+        <span className="muted small">recommendation:</span> {f.recommendation}
+      </p>
+    </article>
+  )
+}
+
+function scoreBucket(score: number): 'clean' | 'mild' | 'structural' | 'severe' {
+  if (score < 20) return 'clean'
+  if (score < 50) return 'mild'
+  if (score < 80) return 'structural'
+  return 'severe'
 }
 
 function formatTimestamp(unixSeconds: number): string {

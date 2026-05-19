@@ -1,6 +1,7 @@
 use std::collections::HashSet;
 use std::path::PathBuf;
 
+use shrinkray_audit::AuditReport;
 use shrinkray_core::{analyze, backup, recompress, strip};
 
 /// Step 1: extension-based folder census + L10N detection + pak classification.
@@ -77,12 +78,20 @@ fn apply_recompress(path: String) -> Result<recompress::RecompressReport, String
     recompress::apply(&root, &mut b).map_err(|e| e.to_string())
 }
 
+/// v0.4: read-only bloat audit — runs the default detector roster and returns
+/// the report. Never writes a byte.
+#[tauri::command]
+fn audit_folder(path: String) -> Result<AuditReport, String> {
+    shrinkray_audit::audit(&PathBuf::from(path)).map_err(|e| e.to_string())
+}
+
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
     tauri::Builder::default()
         .plugin(tauri_plugin_dialog::init())
         .invoke_handler(tauri::generate_handler![
             analyze_folder,
+            audit_folder,
             backup_status,
             ensure_backup,
             restore_folder,
