@@ -3,7 +3,7 @@ name = "shrinkray-tauri"
 version.workspace = true
 description = "Cut Unreal Engine game folder size by trimming what you don't need"
 authors.workspace = true
-license.workspace = true
+license-file.workspace = true
 edition.workspace = true
 rust-version.workspace = true
 

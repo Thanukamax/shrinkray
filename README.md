@@ -114,4 +114,8 @@ The unit tests build synthetic paks via `repak`'s writer and round-trip them thr
 The one corpus test that would prove that — Lyra Starter Game cooked PC build, optimize, boot, watch for crash — needs an Epic account to download Lyra source and a full Unreal Engine install to cook a binary, neither of which fits the free GitHub runners. Until a self-hosted runner with a pre-cooked corpus exists, **Lyra validation is a manual pre-release step**: see `scripts/lyra-smoke.sh` for the procedure.
 
 ## License
-MIT. See [LICENSE](LICENSE).
+**Source-available, no redistribution** — see [LICENSE](LICENSE).
+
+You may clone this repo, read the source, and build shrinkray for your own use. You may not redistribute the source or binaries, mirror the repo, or publish forks/modified versions without prior written permission.
+
+Earlier commits (v0.3.x and prior) were MIT-licensed and remain so for anyone who obtained them under that license; this restriction applies to commits from the relicense onward. The copyright holder reserves the right to relicense future versions under permissive terms at any time.

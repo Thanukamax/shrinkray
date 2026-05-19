@@ -11,7 +11,7 @@ members = [
 version = "0.4.0-dev"
 edition = "2021"
 rust-version = "1.77"
-license = "MIT"
+license-file = "LICENSE"
 authors = ["Thanukamax"]
 
 [workspace.dependencies]

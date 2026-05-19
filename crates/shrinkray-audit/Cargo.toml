@@ -3,7 +3,7 @@ name = "shrinkray-audit"
 version.workspace = true
 edition.workspace = true
 rust-version.workspace = true
-license.workspace = true
+license-file.workspace = true
 authors.workspace = true
 description = "Read-only bloat audit subsystem for shrinkray — surfaces structural inefficiencies in UE game installs"
 

@@ -1,21 +1,53 @@
-MIT License
+shrinkray — Source-Available License (No Redistribution)
 
-Copyright (c) 2026 Thanuka Sehasna Perera
+Copyright (c) 2026 Thanuka Sehasna Perera. All rights reserved.
 
-Permission is hereby granted, free of charge, to any person obtaining a copy
-of this software and associated documentation files (the "Software"), to deal
-in the Software without restriction, including without limitation the rights
-to use, copy, modify, merge, publish, distribute, sublicense, and/or sell
-copies of the Software, and to permit persons to whom the Software is
-furnished to do so, subject to the following conditions:
+1. Source Visibility
+   The source code of this software is made publicly available solely
+   for the purposes of inspection, study, and personal-use builds. You
+   may clone this repository, read the source, and build the software
+   for your own use on hardware you own or control.
 
-The above copyright notice and this permission notice shall be included in all
-copies or substantial portions of the Software.
+2. Restrictions
+   You may NOT, without prior written permission from the copyright
+   holder:
+     (a) redistribute the source code or any compiled binary, in whole
+         or in part, in original or modified form;
+     (b) host the source code on any third-party platform, mirror, or
+         distribution channel;
+     (c) sublicense, sell, lease, or otherwise transfer rights in this
+         software to any third party;
+     (d) publish modified versions, forks, or derivative works for
+         distribution to anyone other than the copyright holder.
 
-THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR
-IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY,
-FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT SHALL THE
-AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER
-LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM,
-OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
-SOFTWARE.
+   Submitting patches as pull requests to the official repository does
+   not constitute redistribution and is welcomed.
+
+3. Prior Versions
+   This license applies to commits from this notice onward. Earlier
+   commits of shrinkray were released under the MIT License; nothing
+   in this notice retroactively withdraws rights already granted under
+   that license to anyone who obtained those earlier versions.
+
+4. Future Relicensing
+   The copyright holder reserves the right to relicense future
+   versions of this software under any terms, including a permissive
+   open-source license (such as MIT, Apache-2.0, or similar), at any
+   time and without notice.
+
+5. No Warranty
+   THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND,
+   EXPRESS OR IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF
+   MERCHANTABILITY, FITNESS FOR A PARTICULAR PURPOSE, AND
+   NONINFRINGEMENT. IN NO EVENT SHALL THE COPYRIGHT HOLDER BE LIABLE
+   FOR ANY CLAIM, DAMAGES, OR OTHER LIABILITY, WHETHER IN AN ACTION OF
+   CONTRACT, TORT, OR OTHERWISE, ARISING FROM, OUT OF, OR IN
+   CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
+   SOFTWARE.
+
+6. Third-Party Components
+   This software includes and links against third-party libraries
+   distributed under their own licenses (MIT, Apache-2.0, BSD,
+   ISC, and others). Those licenses are not affected by this notice
+   and continue to govern the corresponding third-party code. See
+   each dependency's source repository for its license terms.
