@@ -6,6 +6,8 @@
 //! 2. Re-export it here.
 //! 3. Register it in the `default_detectors()` list in `lib.rs`.
 
+pub mod editor_leftovers;
+pub mod encryption;
 pub mod large_chunks;
 pub mod patch_overlay;
 pub mod sharded_videos;

@@ -23,6 +23,8 @@ pub fn default_detectors() -> Vec<Box<dyn Detector>> {
         Box::new(detectors::stale_versions::StaleVersionDirDetector),
         Box::new(detectors::sharded_videos::ShardedVideosDetector),
         Box::new(detectors::large_chunks::LargeChunkDetector),
+        Box::new(detectors::encryption::EncryptionDetector),
+        Box::new(detectors::editor_leftovers::EditorLeftoverDetector),
     ]
 }
 
