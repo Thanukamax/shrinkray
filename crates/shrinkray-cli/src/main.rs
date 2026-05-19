@@ -76,7 +76,13 @@ fn run_audit(path: PathBuf, json: bool, out: Option<PathBuf>) -> Result<()> {
         Some(out_path) => {
             std::fs::write(&out_path, &rendered)
                 .with_context(|| format!("write {}", out_path.display()))?;
-            eprintln!("wrote {} report to {}", report.findings.len(), out_path.display());
+            let format = if json { "JSON" } else { "Markdown" };
+            eprintln!(
+                "wrote {} report ({} finding(s)) to {}",
+                format,
+                report.findings.len(),
+                out_path.display()
+            );
         }
         None => {
             // Use print (not println) so JSON output stays exactly as serialized.
