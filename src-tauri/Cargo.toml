@@ -23,6 +23,7 @@ tauri = { version = "2", features = ["devtools"] }
 tauri-plugin-dialog = "2"
 shrinkray-core.workspace = true
 shrinkray-audit.workspace = true
+shrinkray-sidecar.workspace = true
 serde.workspace = true
 serde_json.workspace = true
 anyhow.workspace = true

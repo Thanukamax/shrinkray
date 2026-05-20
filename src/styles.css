@@ -321,3 +321,193 @@ button.destructive:disabled {
   border-top: 1px dotted var(--line);
 }
 .finding-rec .muted { color: var(--muted); }
+
+/* Asset Inspector (v0.5 preview — .NET sidecar) */
+.inspector-card {
+  border-left: 3px solid rgba(255, 138, 61, 0.5);
+}
+.inspector-head {
+  display: flex;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: 1rem;
+  margin-bottom: 0.6rem;
+}
+.inspector-head h2 { margin-bottom: 0.3rem; }
+.preview-tag {
+  display: inline-block;
+  margin-left: 0.55rem;
+  padding: 0.08rem 0.4rem;
+  background: rgba(255, 138, 61, 0.12);
+  color: var(--accent);
+  border: 1px solid rgba(255, 138, 61, 0.35);
+  border-radius: 2px;
+  font-size: 0.55rem;
+  letter-spacing: 0.18em;
+  text-transform: uppercase;
+  font-weight: 500;
+  vertical-align: middle;
+}
+.inspector-blurb { max-width: 60ch; line-height: 1.5; }
+
+.inspector-meta {
+  width: 100%;
+  border-collapse: collapse;
+  font-size: 0.75rem;
+  margin-top: 0.4rem;
+}
+.inspector-meta th {
+  text-align: left;
+  color: var(--muted);
+  font-weight: 400;
+  text-transform: lowercase;
+  letter-spacing: 0;
+  padding: 0.35rem 0.8rem 0.35rem 0;
+  width: 10rem;
+  vertical-align: top;
+  border-bottom: 1px dotted var(--line);
+}
+.inspector-meta td {
+  padding: 0.35rem 0;
+  border-bottom: 1px dotted var(--line);
+  text-align: left !important;
+}
+
+.badge-ok {
+  display: inline-block;
+  padding: 0.1rem 0.45rem;
+  background: rgba(120, 220, 160, 0.12);
+  color: #78dca0;
+  border: 1px solid rgba(120, 220, 160, 0.3);
+  border-radius: 2px;
+  font-size: 0.65rem;
+  letter-spacing: 0.12em;
+  text-transform: uppercase;
+}
+.badge-warn {
+  display: inline-block;
+  padding: 0.1rem 0.45rem;
+  background: rgba(255, 165, 90, 0.15);
+  color: #ffa55a;
+  border: 1px solid rgba(255, 165, 90, 0.3);
+  border-radius: 2px;
+  font-size: 0.65rem;
+  letter-spacing: 0.12em;
+  text-transform: uppercase;
+}
+
+.inspector-filters {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 0.4rem;
+  margin-bottom: 0.7rem;
+}
+.chip {
+  background: transparent;
+  color: var(--muted);
+  border: 1px solid var(--line);
+  border-radius: 2px;
+  padding: 0.25rem 0.65rem;
+  font-family: inherit;
+  font-size: 0.66rem;
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+  cursor: pointer;
+}
+.chip:hover { color: var(--fg); border-color: var(--fg); }
+.chip-on {
+  color: var(--accent);
+  border-color: var(--accent);
+  background: rgba(255, 138, 61, 0.08);
+}
+.inspector-search {
+  margin-left: auto;
+  background: transparent;
+  color: var(--fg);
+  border: 1px solid var(--line);
+  border-radius: 2px;
+  padding: 0.32rem 0.55rem;
+  font-family: inherit;
+  font-size: 0.72rem;
+  min-width: 18ch;
+}
+.inspector-search:focus {
+  outline: none;
+  border-color: var(--accent);
+}
+
+.inspector-table {
+  width: 100%;
+  border-collapse: collapse;
+  font-size: 0.74rem;
+  margin-top: 0.4rem;
+}
+.inspector-table thead th {
+  text-align: left;
+  color: var(--muted);
+  font-weight: 400;
+  font-size: 0.62rem;
+  letter-spacing: 0.18em;
+  text-transform: uppercase;
+  padding: 0.35rem 0.6rem 0.35rem 0;
+  border-bottom: 1px solid var(--line);
+}
+.inspector-table thead th.size-col { text-align: right; }
+.inspector-table td {
+  padding: 0.32rem 0.6rem 0.32rem 0;
+  border-bottom: 1px dotted var(--line);
+}
+.inspector-table td.kind {
+  color: var(--muted);
+  font-size: 0.68rem;
+  text-transform: lowercase;
+  letter-spacing: 0;
+}
+.inspector-table td.size {
+  text-align: right;
+  font-variant-numeric: tabular-nums;
+}
+.inspector-row-on td {
+  background: rgba(255, 138, 61, 0.06);
+}
+.inspector-row-on td:first-child {
+  box-shadow: inset 2px 0 0 var(--accent);
+}
+
+.inspector-detail {
+  margin-top: 1.2rem;
+  padding: 1rem 1.2rem;
+  background: rgba(255, 138, 61, 0.03);
+  border: 1px solid rgba(255, 138, 61, 0.25);
+  border-left-width: 3px;
+  border-radius: 3px;
+}
+.inspector-detail-head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 1rem;
+  margin-bottom: 0.4rem;
+}
+.inspector-detail-head h3 {
+  font-size: 0.7rem;
+  font-weight: 500;
+  letter-spacing: 0.18em;
+  text-transform: uppercase;
+  color: var(--accent);
+}
+.inspector-detail-path {
+  margin-bottom: 0.8rem;
+  color: var(--fg);
+  word-break: break-all;
+}
+.inspector-detail-sub {
+  margin-top: 1rem;
+  margin-bottom: 0.4rem;
+  font-size: 0.65rem;
+  font-weight: 500;
+  letter-spacing: 0.18em;
+  text-transform: uppercase;
+  color: var(--muted);
+}

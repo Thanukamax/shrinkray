@@ -1,6 +1,7 @@
 import { useEffect, useMemo, useState } from 'react'
 import { invoke } from '@tauri-apps/api/core'
 import { open } from '@tauri-apps/plugin-dialog'
+import { AssetInspector } from './AssetInspector'
 
 const PREVIEW_ONLY_KEY = 'shrinkray.preview-only'
 const SEEN_KEY = 'shrinkray.seen'
@@ -470,6 +471,8 @@ export default function App() {
       </section>
 
       {audit && <AuditCard report={audit} />}
+
+      <AssetInspector />
 
       {backup && (
         <section className="report backup-card">
