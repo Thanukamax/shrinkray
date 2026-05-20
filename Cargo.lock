@@ -3008,6 +3008,18 @@ dependencies = [
 ]
 
 [[package]]
+name = "shrinkray-sidecar"
+version = "0.4.0-dev"
+dependencies = [
+ "anyhow",
+ "repak",
+ "serde",
+ "serde_json",
+ "tempfile",
+ "thiserror 2.0.18",
+]
+
+[[package]]
 name = "shrinkray-tauri"
 version = "0.4.0-dev"
 dependencies = [
@@ -3016,6 +3028,7 @@ dependencies = [
  "serde_json",
  "shrinkray-audit",
  "shrinkray-core",
+ "shrinkray-sidecar",
  "tauri",
  "tauri-build",
  "tauri-plugin-dialog",

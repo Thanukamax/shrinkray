@@ -4,6 +4,7 @@ members = [
     "crates/shrinkray-core",
     "crates/shrinkray-audit",
     "crates/shrinkray-cli",
+    "crates/shrinkray-sidecar",
     "src-tauri",
 ]
 
@@ -29,6 +30,7 @@ repak = { git = "https://github.com/trumank/repak", rev = "e215472c51db69328b1ce
 
 shrinkray-core = { path = "crates/shrinkray-core" }
 shrinkray-audit = { path = "crates/shrinkray-audit" }
+shrinkray-sidecar = { path = "crates/shrinkray-sidecar" }
 
 [profile.dev]
 incremental = true

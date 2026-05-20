@@ -18,3 +18,11 @@ Thumbs.db
 
 .env
 .env.local
+
+# .NET sidecar build artifacts
+sidecar/**/bin/
+sidecar/**/obj/
+sidecar/**/publish/
+
+# Bundled sidecar binaries (regenerated via scripts/build-sidecar.sh)
+src-tauri/binaries/

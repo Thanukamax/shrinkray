@@ -1,0 +1,18 @@
+[package]
+name = "shrinkray-sidecar"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license-file.workspace = true
+authors.workspace = true
+description = "Rust IPC client for the bundled .NET sidecar (CUE4Parse + UAssetAPI)"
+
+[dependencies]
+serde.workspace = true
+serde_json.workspace = true
+anyhow.workspace = true
+thiserror.workspace = true
+
+[dev-dependencies]
+tempfile.workspace = true
+repak.workspace = true
