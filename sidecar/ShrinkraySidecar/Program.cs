@@ -107,6 +107,7 @@ public static class Program
                 "inspect_asset" => HandleInspectAsset(req.Args),
                 "plan_strip_mips" => HandlePlanStripMips(req.Args),
                 "apply_strip_mips" => HandleApplyStripMips(req.Args),
+                "probe_texture_bytes" => HandleProbeTextureBytes(req.Args),
                 _ => throw new InvalidOperationException($"unknown command: {req.Cmd}"),
             };
             resp = new Response { Id = req.Id, Ok = true, Result = result };
@@ -155,6 +156,22 @@ public static class Program
                 game = parsed;
         }
         return AssetInspectorImpl.Inspect(pakPath, assetPath, game);
+    }
+
+    private static object HandleProbeTextureBytes(JsonElement? args)
+    {
+        if (args is null) throw new ArgumentException("probe_texture_bytes requires args.asset_path");
+        var assetPath = args.Value.TryGetProperty("asset_path", out var p)
+            ? p.GetString() ?? throw new ArgumentException("asset_path must be string")
+            : throw new ArgumentException("missing asset_path");
+        var engineVer = UAssetAPI.UnrealTypes.EngineVersion.VER_UE4_AUTOMATIC_VERSION;
+        if (args.Value.TryGetProperty("engine_version", out var ev) && ev.ValueKind == JsonValueKind.String)
+        {
+            var name = ev.GetString();
+            if (!string.IsNullOrEmpty(name) && Enum.TryParse<UAssetAPI.UnrealTypes.EngineVersion>(name, true, out var parsed))
+                engineVer = parsed;
+        }
+        return TextureBytesProbe.Probe(assetPath, engineVer);
     }
 
     /// <summary>
