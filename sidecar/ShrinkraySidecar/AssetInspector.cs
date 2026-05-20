@@ -1,6 +1,7 @@
 using System.Text.Json.Serialization;
 using CUE4Parse.FileProvider;
 using CUE4Parse.UE4.Assets;
+using CUE4Parse.UE4.Assets.Exports.Texture;
 using CUE4Parse.UE4.Objects.UObject;
 using CUE4Parse.UE4.Versions;
 
@@ -25,6 +26,20 @@ public sealed record CustomVersionEntry(
     [property: JsonPropertyName("key")] string Key,
     [property: JsonPropertyName("version")] int Version);
 
+public sealed record MipDescriptor(
+    [property: JsonPropertyName("index")] int Index,
+    [property: JsonPropertyName("width")] int Width,
+    [property: JsonPropertyName("height")] int Height,
+    [property: JsonPropertyName("byte_size")] long ByteSize);
+
+public sealed record TextureInfo(
+    [property: JsonPropertyName("name")] string Name,
+    [property: JsonPropertyName("class_name")] string ClassName,
+    [property: JsonPropertyName("pixel_format")] string PixelFormat,
+    [property: JsonPropertyName("mip_count")] int MipCount,
+    [property: JsonPropertyName("mips")] IReadOnlyList<MipDescriptor> Mips,
+    [property: JsonPropertyName("total_bytes")] long TotalBytes);
+
 public sealed record InspectAssetResult(
     [property: JsonPropertyName("pak_path")] string PakPath,
     [property: JsonPropertyName("asset_path")] string AssetPath,
@@ -34,7 +49,8 @@ public sealed record InspectAssetResult(
     [property: JsonPropertyName("file_version_ue")] string FileVersionUe,
     [property: JsonPropertyName("custom_versions")] IReadOnlyList<CustomVersionEntry> CustomVersions,
     [property: JsonPropertyName("exports")] IReadOnlyList<ExportInfo> Exports,
-    [property: JsonPropertyName("imports")] IReadOnlyList<ImportInfo> Imports);
+    [property: JsonPropertyName("imports")] IReadOnlyList<ImportInfo> Imports,
+    [property: JsonPropertyName("textures")] IReadOnlyList<TextureInfo> Textures);
 
 public static class AssetInspectorImpl
 {
@@ -53,10 +69,40 @@ public static class AssetInspectorImpl
             SearchOption.TopDirectoryOnly,
             versions);
         provider.Initialize();
+        // Initialize() only enumerates paks in the directory — it does NOT
+        // mount them. MountAsync() reads each pak's index into the provider's
+        // Files dict; without it TryLoadPackage returns null for every path.
+        // PostMount + LoadVirtualPaths finalize the /Game/ path resolution.
+        provider.MountAsync().GetAwaiter().GetResult();
+        provider.PostMount();
+        provider.LoadVirtualPaths();
 
-        if (!provider.TryLoadPackage(assetPath, out var pkg) || pkg is null)
+        // TryLoadPackage(string) swallows exceptions and returns false on
+        // failure. Use LoadPackage(GameFile) directly so the underlying
+        // exception (decompression, version, bad header) surfaces.
+        IPackage? pkg = null;
+        Exception? loadException = null;
+        if (provider.Files.TryGetValue(assetPath, out var directHit))
+        {
+            try
+            {
+                pkg = provider.LoadPackage(directHit);
+            }
+            catch (Exception ex)
+            {
+                loadException = ex;
+            }
+        }
+        if (pkg is null)
+        {
+            var detail = loadException is null
+                ? "GameFile not found in provider.Files dict"
+                : $"{loadException.GetType().Name}: {loadException.Message}";
             throw new InvalidOperationException(
-                $"could not load package '{assetPath}' from {pakPath}");
+                $"could not load package '{assetPath}' from {pakPath}. " +
+                $"provider has {provider.Files.Count} files mounted across " +
+                $"{provider.MountedVfs.Count} pak(s). underlying: {detail}");
+        }
 
         var summary = pkg.Summary;
 
@@ -68,6 +114,7 @@ public static class AssetInspectorImpl
         }
 
         var exports = new List<ExportInfo>();
+        var textures = new List<TextureInfo>();
         var exportLazies = pkg.ExportsLazy;
         if (exportLazies is not null)
         {
@@ -81,6 +128,15 @@ public static class AssetInspectorImpl
                         Name: obj.Name,
                         ClassName: obj.ExportType ?? obj.GetType().Name,
                         SerialSize: 0));
+
+                    // Texture inspection: any UTexture-derived class with a
+                    // PlatformData.Mips chain. Safe under try/catch because
+                    // some cooked formats omit data we expect.
+                    if (obj is UTexture tex)
+                    {
+                        var info = BuildTextureInfo(tex);
+                        if (info is not null) textures.Add(info);
+                    }
                 }
                 catch
                 {
@@ -104,6 +160,65 @@ public static class AssetInspectorImpl
             FileVersionUe: summary?.FileVersionUE.ToString() ?? "unknown",
             CustomVersions: customVersions,
             Exports: exports,
-            Imports: imports);
+            Imports: imports,
+            Textures: textures);
+    }
+
+    /// <summary>
+    /// Read the mip chain out of any UTexture-derived export. Returns null if
+    /// PlatformData / Mips aren't accessible (e.g. RHI-cooked textures that
+    /// shed their CPU-side data).
+    /// </summary>
+    private static TextureInfo? BuildTextureInfo(UTexture texture)
+    {
+        try
+        {
+            var platformData = texture switch
+            {
+                UTexture2D t2d => t2d.PlatformData,
+                UTextureCube cube => cube.PlatformData,
+                _ => null,
+            };
+            if (platformData is null || platformData.Mips is null || platformData.Mips.Length == 0)
+                return null;
+
+            var mips = new List<MipDescriptor>();
+            long total = 0;
+            for (int i = 0; i < platformData.Mips.Length; i++)
+            {
+                var mip = platformData.Mips[i];
+                if (mip is null) continue;
+                long size = 0;
+                try
+                {
+                    // FByteBulkData.Header.ElementCount = total bytes in this mip.
+                    // Header is a struct (value type), so `?.` is invalid there.
+                    if (mip.BulkData is { } bulk)
+                        size = bulk.Header.ElementCount;
+                }
+                catch
+                {
+                    // Bulk header may not be readable for inline / stripped cooks.
+                }
+                total += size;
+                mips.Add(new MipDescriptor(
+                    Index: i,
+                    Width: mip.SizeX,
+                    Height: mip.SizeY,
+                    ByteSize: size));
+            }
+
+            return new TextureInfo(
+                Name: texture.Name,
+                ClassName: texture.ExportType ?? texture.GetType().Name,
+                PixelFormat: platformData.PixelFormat.ToString(),
+                MipCount: mips.Count,
+                Mips: mips,
+                TotalBytes: total);
+        }
+        catch
+        {
+            return null;
+        }
     }
 }

@@ -4,7 +4,10 @@ use std::sync::Mutex;
 
 use shrinkray_audit::AuditReport;
 use shrinkray_core::{analyze, backup, recompress, strip};
-use shrinkray_sidecar::{InspectAssetResult, ListAssetsResult, PingResult, Sidecar};
+use shrinkray_sidecar::{
+    ApplyStripMipsStub, InspectAssetResult, ListAssetsResult, PingResult, PlanStripMipsResult,
+    Sidecar,
+};
 
 /// Lazy-initialised sidecar handle. We spawn the .NET process on first use and
 /// keep it alive for the lifetime of the app — JSON IPC is cheap, process
@@ -25,9 +28,21 @@ impl SidecarHandle {
 }
 
 /// Step 1: extension-based folder census + L10N detection + pak classification.
+/// Wrapped in catch_unwind so a panic inside `analyze` surfaces as an IPC error
+/// string instead of deadlocking the front-end's `invoke()` await.
 #[tauri::command]
-fn analyze_folder(path: String) -> analyze::AnalysisReport {
-    analyze::analyze(&PathBuf::from(path))
+fn analyze_folder(path: String) -> Result<analyze::AnalysisReport, String> {
+    let root = PathBuf::from(path);
+    std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| analyze::analyze(&root)))
+        .map_err(|p| {
+            if let Some(s) = p.downcast_ref::<&'static str>() {
+                format!("analyze panicked: {s}")
+            } else if let Some(s) = p.downcast_ref::<String>() {
+                format!("analyze panicked: {s}")
+            } else {
+                "analyze panicked (non-string payload)".to_string()
+            }
+        })
 }
 
 /// Step 2: returns None if no backup exists for this folder, otherwise a
@@ -135,6 +150,149 @@ fn sidecar_inspect_asset(
     state.with(|s| s.inspect_asset(&pak_path, &asset_path, None))
 }
 
+/// v0.5 (preview): walk all readable packages in a pak and project the savings
+/// from capping each texture's top mip dimension to `max_dim`. Read-only.
+/// `game` is a CUE4Parse EGame string (e.g. "GAME_UE4_27"); UE4 cooks need a
+/// UE4 version or typed UTexture casts silently fail.
+#[tauri::command]
+fn sidecar_plan_strip_mips(
+    pak_path: String,
+    max_dim: i32,
+    limit: Option<i32>,
+    game: Option<String>,
+    state: tauri::State<SidecarHandle>,
+) -> Result<PlanStripMipsResult, String> {
+    state.with(|s| s.plan_strip_mips(&pak_path, max_dim, limit, game.as_deref()))
+}
+
+/// v0.6 stub. Returns the structured "not implemented" payload so the UI can
+/// render an honest "what's next" state instead of erroring on a missing
+/// command. Real write-side lands in v0.6 once UAssetAPI is integrated.
+#[tauri::command]
+fn sidecar_apply_strip_mips(
+    pak_path: String,
+    state: tauri::State<SidecarHandle>,
+) -> Result<ApplyStripMipsStub, String> {
+    state.with(|s| s.apply_strip_mips(&pak_path))
+}
+
+/// v0.4.x: in-app Win7 Open dialog backing API. Lists one directory level
+/// without recursion. Errors map to a string so the front-end can show them.
+#[derive(serde::Serialize)]
+struct DirEntry {
+    name: String,
+    path: String,
+    is_dir: bool,
+    size: u64,
+    modified: i64,
+    extension: String,
+}
+
+#[tauri::command]
+fn list_dir(path: String) -> Result<Vec<DirEntry>, String> {
+    let p = PathBuf::from(&path);
+    let read = std::fs::read_dir(&p).map_err(|e| format!("{}: {e}", p.display()))?;
+    let mut out = Vec::new();
+    for entry in read.flatten() {
+        let meta = match entry.metadata() {
+            Ok(m) => m,
+            Err(_) => continue,
+        };
+        let name = entry.file_name().to_string_lossy().into_owned();
+        if name.starts_with('.') {
+            continue;
+        }
+        let ext = entry
+            .path()
+            .extension()
+            .and_then(|e| e.to_str())
+            .unwrap_or("")
+            .to_ascii_lowercase();
+        let modified = meta
+            .modified()
+            .ok()
+            .and_then(|t| t.duration_since(std::time::UNIX_EPOCH).ok())
+            .map(|d| d.as_secs() as i64)
+            .unwrap_or(0);
+        out.push(DirEntry {
+            name,
+            path: entry.path().to_string_lossy().into_owned(),
+            is_dir: meta.is_dir(),
+            size: meta.len(),
+            modified,
+            extension: ext,
+        });
+    }
+    Ok(out)
+}
+
+#[derive(serde::Serialize)]
+struct QuickLink {
+    label: String,
+    path: String,
+    kind: &'static str,
+}
+
+#[tauri::command]
+fn quick_links() -> Vec<QuickLink> {
+    let mut out = Vec::new();
+    let home = dirs::home_dir();
+    let push = |out: &mut Vec<QuickLink>, label: &str, path: Option<PathBuf>, kind: &'static str| {
+        if let Some(p) = path {
+            if p.exists() {
+                out.push(QuickLink {
+                    label: label.to_string(),
+                    path: p.to_string_lossy().into_owned(),
+                    kind,
+                });
+            }
+        }
+    };
+    push(&mut out, "Home", home.clone(), "home");
+    push(&mut out, "Desktop", dirs::desktop_dir(), "desktop");
+    push(&mut out, "Downloads", dirs::download_dir(), "download");
+    push(&mut out, "Documents", dirs::document_dir(), "doc");
+    push(&mut out, "Videos", dirs::video_dir(), "video");
+    // Linux mount points where games typically live.
+    for media_root in ["/media", "/mnt", "/run/media"] {
+        let mr = PathBuf::from(media_root);
+        if let Ok(read) = std::fs::read_dir(&mr) {
+            for entry in read.flatten() {
+                if entry.file_type().map(|t| t.is_dir()).unwrap_or(false) {
+                    // Inside /media/<user>/... on Fedora — flatten one level.
+                    if media_root == "/media" || media_root == "/run/media" {
+                        if let Ok(inner) = std::fs::read_dir(entry.path()) {
+                            for sub in inner.flatten() {
+                                if sub.file_type().map(|t| t.is_dir()).unwrap_or(false) {
+                                    out.push(QuickLink {
+                                        label: sub.file_name().to_string_lossy().into_owned(),
+                                        path: sub.path().to_string_lossy().into_owned(),
+                                        kind: "drive",
+                                    });
+                                }
+                            }
+                            continue;
+                        }
+                    }
+                    out.push(QuickLink {
+                        label: entry.file_name().to_string_lossy().into_owned(),
+                        path: entry.path().to_string_lossy().into_owned(),
+                        kind: "drive",
+                    });
+                }
+            }
+        }
+    }
+    out
+}
+
+#[tauri::command]
+fn path_parent(path: String) -> Option<String> {
+    PathBuf::from(path)
+        .parent()
+        .map(|p| p.to_string_lossy().into_owned())
+}
+
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
     tauri::Builder::default()
@@ -154,6 +312,11 @@ pub fn run() {
             sidecar_ping,
             sidecar_list_assets,
             sidecar_inspect_asset,
+            sidecar_plan_strip_mips,
+            sidecar_apply_strip_mips,
+            list_dir,
+            quick_links,
+            path_parent,
         ])
         .run(tauri::generate_context!())
         .expect("error while running tauri application");

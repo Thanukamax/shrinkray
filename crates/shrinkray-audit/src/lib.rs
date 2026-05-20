@@ -26,6 +26,12 @@ pub fn default_detectors() -> Vec<Box<dyn Detector>> {
         Box::new(detectors::encryption::EncryptionDetector),
         Box::new(detectors::editor_leftovers::EditorLeftoverDetector),
         Box::new(detectors::launcher_satellite::LauncherSatelliteDetector),
+        Box::new(detectors::shader_rhi_redundancy::ShaderRhiRedundancyDetector),
+        Box::new(detectors::redist_installer::RedistInstallerDetector),
+        Box::new(detectors::platform_siblings::PlatformSiblingsDetector),
+        Box::new(detectors::mod_manager_artifacts::ModManagerArtifactsDetector),
+        Box::new(detectors::duplicate_content::DuplicateContentDetector),
+        Box::new(detectors::cef_locales::CefLocalesDetector),
     ]
 }
 

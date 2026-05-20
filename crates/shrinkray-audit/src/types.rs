@@ -49,6 +49,19 @@ pub enum Category {
     LauncherSatellite,
     /// Overall chunking strategy assessment (composite of size + count).
     ChunkingQuality,
+    /// Multiple RHI shader caches ship together (PCD3D_SM5 + PCD3D_SM6 etc).
+    ShaderRhiRedundancy,
+    /// Bundled redistributable installers (UE4PrereqSetup, vc_redist, etc).
+    RedistInstaller,
+    /// Multi-platform binary tree (Win64 + Linux + Mac in one install).
+    PlatformSiblings,
+    /// Content-hash duplicates of large loose files.
+    DuplicateContent,
+    /// Mod manager / installer backup files (.bak, .disabled, etc).
+    ModManagerArtifacts,
+    /// CEF (Chromium Embedded Framework) per-locale .pak bundles for
+    /// languages the user doesn't need.
+    CefLocales,
 }
 
 impl Category {
@@ -62,6 +75,12 @@ impl Category {
             Category::EditorLeftovers => "editor_leftovers",
             Category::LauncherSatellite => "launcher_satellite",
             Category::ChunkingQuality => "chunking_quality",
+            Category::ShaderRhiRedundancy => "shader_rhi_redundancy",
+            Category::RedistInstaller => "redist_installer",
+            Category::PlatformSiblings => "platform_siblings",
+            Category::DuplicateContent => "duplicate_content",
+            Category::ModManagerArtifacts => "mod_manager_artifacts",
+            Category::CefLocales => "cef_locales",
         }
     }
 }

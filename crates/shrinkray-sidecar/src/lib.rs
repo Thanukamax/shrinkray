@@ -80,6 +80,24 @@ pub struct CustomVersionEntry {
 }
 
 #[derive(Debug, Deserialize, Serialize, Clone)]
+pub struct MipDescriptor {
+    pub index: i32,
+    pub width: i32,
+    pub height: i32,
+    pub byte_size: i64,
+}
+
+#[derive(Debug, Deserialize, Serialize, Clone)]
+pub struct TextureInfo {
+    pub name: String,
+    pub class_name: String,
+    pub pixel_format: String,
+    pub mip_count: i32,
+    pub mips: Vec<MipDescriptor>,
+    pub total_bytes: i64,
+}
+
+#[derive(Debug, Deserialize, Serialize, Clone)]
 pub struct InspectAssetResult {
     pub pak_path: String,
     pub asset_path: String,
@@ -90,6 +108,51 @@ pub struct InspectAssetResult {
     pub custom_versions: Vec<CustomVersionEntry>,
     pub exports: Vec<ExportInfo>,
     pub imports: Vec<ImportInfo>,
+    #[serde(default)]
+    pub textures: Vec<TextureInfo>,
+}
+
+#[derive(Debug, Deserialize, Serialize, Clone)]
+pub struct StripMipsItem {
+    pub asset_path: String,
+    pub export_name: String,
+    pub class_name: String,
+    pub pixel_format: String,
+    pub current_mip0_dim: i32,
+    pub kept_mip0_dim: i32,
+    pub drop_mip_count: i32,
+    pub kept_mip_count: i32,
+    pub save_bytes: i64,
+    pub original_bytes: i64,
+}
+
+#[derive(Debug, Deserialize, Serialize, Clone)]
+pub struct ClassCount {
+    pub class_name: String,
+    pub count: i32,
+}
+
+#[derive(Debug, Deserialize, Serialize, Clone)]
+pub struct ApplyStripMipsStub {
+    pub implemented: bool,
+    pub phase: String,
+    pub message: String,
+    pub backup_required: bool,
+    pub requires: Vec<String>,
+}
+
+#[derive(Debug, Deserialize, Serialize, Clone)]
+pub struct PlanStripMipsResult {
+    pub pak_path: String,
+    pub max_dim: i32,
+    pub scanned_assets: i32,
+    pub texture_count: i32,
+    pub items: Vec<StripMipsItem>,
+    pub total_save_bytes: i64,
+    pub total_texture_bytes: i64,
+    pub truncated: bool,
+    #[serde(default)]
+    pub class_histogram: Vec<ClassCount>,
 }
 
 pub struct Sidecar {
@@ -197,6 +260,47 @@ impl Sidecar {
             args.insert("game".into(), Value::String(g.into()));
         }
         let result = self.call("inspect_asset", Some(Value::Object(args)))?;
+        Ok(serde_json::from_value(result)?)
+    }
+
+    /// v0.6 stub: returns a structured "not implemented" payload. Lets the
+    /// frontend wire the apply button up front so v0.6's binary write
+    /// integration is a swap-in, not a new IPC.
+    pub fn apply_strip_mips(&mut self, pak_path: impl AsRef<Path>) -> Result<ApplyStripMipsStub> {
+        let mut args = serde_json::Map::new();
+        args.insert(
+            "pak_path".into(),
+            Value::String(pak_path.as_ref().display().to_string()),
+        );
+        let result = self.call("apply_strip_mips", Some(Value::Object(args)))?;
+        Ok(serde_json::from_value(result)?)
+    }
+
+    /// Walk every readable package in a pak and project the savings from
+    /// capping each texture's top mip dimension to `max_dim`. Read-only.
+    /// `game` overrides the CUE4Parse engine version (default GAME_UE5_LATEST);
+    /// passing the wrong version causes typed casts (UTexture2D etc.) to fail
+    /// and the planner returns zero textures even on cooked content.
+    pub fn plan_strip_mips(
+        &mut self,
+        pak_path: impl AsRef<Path>,
+        max_dim: i32,
+        limit: Option<i32>,
+        game: Option<&str>,
+    ) -> Result<PlanStripMipsResult> {
+        let mut args = serde_json::Map::new();
+        args.insert(
+            "pak_path".into(),
+            Value::String(pak_path.as_ref().display().to_string()),
+        );
+        args.insert("max_dim".into(), Value::Number(max_dim.into()));
+        if let Some(l) = limit {
+            args.insert("limit".into(), Value::Number(l.into()));
+        }
+        if let Some(g) = game {
+            args.insert("game".into(), Value::String(g.into()));
+        }
+        let result = self.call("plan_strip_mips", Some(Value::Object(args)))?;
         Ok(serde_json::from_value(result)?)
     }
 

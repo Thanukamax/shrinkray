@@ -15,7 +15,11 @@
   </PropertyGroup>
 
   <ItemGroup>
-    <PackageReference Include="CUE4Parse" Version="1.2.2" />
+    <!-- Master source build via Git submodule. The published NuGet (1.2.2)
+         omits the DeserializeCookedPlatformData call we need to populate
+         FTexturePlatformData on cooked textures; master invokes it from
+         UTexture.Deserialize so PlatformData.Mips is non-empty after load. -->
+    <ProjectReference Include="..\external\CUE4Parse\CUE4Parse\CUE4Parse.csproj" />
   </ItemGroup>
 
 </Project>

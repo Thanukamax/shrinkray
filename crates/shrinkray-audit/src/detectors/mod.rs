@@ -6,11 +6,17 @@
 //! 2. Re-export it here.
 //! 3. Register it in the `default_detectors()` list in `lib.rs`.
 
+pub mod cef_locales;
+pub mod duplicate_content;
 pub mod editor_leftovers;
 pub mod encryption;
 pub mod large_chunks;
 pub mod launcher_satellite;
+pub mod mod_manager_artifacts;
 pub mod patch_overlay;
+pub mod platform_siblings;
+pub mod redist_installer;
+pub mod shader_rhi_redundancy;
 pub mod sharded_videos;
 pub mod stale_versions;
 

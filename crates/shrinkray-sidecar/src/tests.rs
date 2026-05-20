@@ -82,3 +82,57 @@ fn list_assets_limit_truncates() {
     assert_eq!(r.entries.len(), 3);
     assert!(r.truncated);
 }
+
+/// Smoke test for the v0.5 mip-strip planner. We can't synthesize a fully
+/// valid cooked Texture2D with this minimal `make_pak` helper (the bytes
+/// are placeholder data, not real FTexturePlatformData), so this test
+/// covers the IPC contract and the empty-result path: pak parses, no
+/// textures are recognised, the result is well-formed.
+///
+/// Real-world byte-exact validation lives in manual pre-release checks
+/// against the user's UE4 demo corpus — see CHANGELOG v0.5.0 for the
+/// 185-texture / 570 MB save number on Pamali.
+#[test]
+fn plan_strip_mips_against_synthetic_pak() {
+    let Some(mut s) = sidecar_or_skip() else { return };
+    let tmp = tempfile::tempdir().unwrap();
+    let pak_path = tmp.path().join("synthetic.pak");
+    make_pak(
+        &pak_path,
+        &[
+            ("Game/Content/Foo.uasset", b"fakeuassetbytes"),
+            ("Game/Content/Foo.uexp", b"fakeuexpbytes"),
+        ],
+    );
+
+    let r = s
+        .plan_strip_mips(&pak_path, 1024, Some(100), Some("GAME_UE4_LATEST"))
+        .expect("plan_strip_mips ok");
+
+    // Result shape is what we promise the frontend.
+    assert_eq!(r.max_dim, 1024);
+    assert_eq!(r.texture_count, 0, "synthetic bytes aren't real textures");
+    assert_eq!(r.total_save_bytes, 0);
+    assert_eq!(r.total_texture_bytes, 0);
+    assert!(r.items.is_empty());
+    // class_histogram is the diagnostic surface — empty here because no
+    // package successfully deserializes.
+    // (No assert on length; just confirm it's a valid Vec, not null.)
+    let _: &[crate::ClassCount] = &r.class_histogram;
+}
+
+/// The v0.6 stub: apply_strip_mips returns structured "not implemented"
+/// so the frontend can render the v0.6 affordance without 404ing.
+#[test]
+fn apply_strip_mips_stub_returns_v06_marker() {
+    let Some(mut s) = sidecar_or_skip() else { return };
+    let tmp = tempfile::tempdir().unwrap();
+    let pak_path = tmp.path().join("any.pak");
+    make_pak(&pak_path, &[("Game/Content/A.uasset", b"x")]);
+    let r = s.apply_strip_mips(&pak_path).expect("apply_strip_mips ok");
+    assert!(!r.implemented);
+    assert_eq!(r.phase, "v0.6");
+    assert!(r.backup_required);
+    assert!(!r.requires.is_empty(), "v0.6 prerequisites listed");
+    assert!(r.message.to_lowercase().contains("uassetapi"));
+}

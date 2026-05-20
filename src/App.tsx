@@ -1,7 +1,26 @@
 import { useEffect, useMemo, useState } from 'react'
 import { invoke } from '@tauri-apps/api/core'
-import { open } from '@tauri-apps/plugin-dialog'
 import { AssetInspector } from './AssetInspector'
+import { MipStripPanel } from './MipStripPanel'
+import { TitleBar } from './TitleBar'
+import { OpenDialog } from './OpenDialog'
+
+const RECENT_FOLDERS_KEY = 'shrinkray.recent-folders'
+function loadRecent(): string[] {
+  try {
+    const raw = localStorage.getItem(RECENT_FOLDERS_KEY)
+    return raw ? JSON.parse(raw) : []
+  } catch {
+    return []
+  }
+}
+function pushRecent(p: string) {
+  try {
+    const cur = loadRecent().filter((x) => x !== p)
+    cur.unshift(p)
+    localStorage.setItem(RECENT_FOLDERS_KEY, JSON.stringify(cur.slice(0, 8)))
+  } catch {}
+}
 
 const PREVIEW_ONLY_KEY = 'shrinkray.preview-only'
 const SEEN_KEY = 'shrinkray.seen'
@@ -141,6 +160,12 @@ type AuditCategory =
   | 'editor_leftovers'
   | 'launcher_satellite'
   | 'chunking_quality'
+  | 'shader_rhi_redundancy'
+  | 'redist_installer'
+  | 'platform_siblings'
+  | 'duplicate_content'
+  | 'mod_manager_artifacts'
+  | 'cef_locales'
 type AuditEvidence = { path: string; size_bytes: number; note?: string }
 type AuditFinding = {
   detector: string
@@ -183,6 +208,12 @@ const CATEGORY_LABEL: Record<AuditCategory, string> = {
   editor_leftovers: 'Editor leftovers',
   launcher_satellite: 'Launcher language satellites',
   chunking_quality: 'Chunking strategy',
+  shader_rhi_redundancy: 'Shader-cache RHI redundancy',
+  redist_installer: 'Redistributable installers',
+  platform_siblings: 'Multi-platform binaries',
+  duplicate_content: 'Duplicate content',
+  mod_manager_artifacts: 'Mod-manager leftovers',
+  cef_locales: 'CEF locale bundles',
 }
 
 function scoreLabel(score: number): string {
@@ -218,7 +249,14 @@ export default function App() {
     persistPreviewOnly(previewOnly)
   }, [previewOnly])
 
-  async function pickFolder() {
+  const [folderDialogOpen, setFolderDialogOpen] = useState(false)
+
+  function pickFolder() {
+    setFolderDialogOpen(true)
+  }
+
+  async function onFolderChosen(sel: string) {
+    setFolderDialogOpen(false)
     setError(null)
     setRestore(null)
     setPlan(null)
@@ -227,17 +265,15 @@ export default function App() {
     setRecompressReport(null)
     setAudit(null)
     setDropLangs(new Set())
-    const sel = await open({ directory: true, multiple: false, title: 'Pick a game folder' })
-    if (typeof sel === 'string') {
-      setPath(sel)
-      setReport(null)
-      const [st, encs] = await Promise.all([
-        invoke<BackupStatus | null>('backup_status', { path: sel }),
-        invoke<EncoderAvailability[]>('detect_encoders'),
-      ])
-      setBackup(st)
-      setEncoders(encs)
-    }
+    setPath(sel)
+    setReport(null)
+    pushRecent(sel)
+    const [st, encs] = await Promise.all([
+      invoke<BackupStatus | null>('backup_status', { path: sel }),
+      invoke<EncoderAvailability[]>('detect_encoders'),
+    ])
+    setBackup(st)
+    setEncoders(encs)
   }
 
   async function runAudit() {
@@ -261,12 +297,18 @@ export default function App() {
     try {
       const r = await invoke<AnalysisReport>('analyze_folder', { path })
       setReport(r)
-      const st = await invoke<BackupStatus | null>('backup_status', { path })
-      setBackup(st)
     } catch (e) {
       setError(String(e))
     } finally {
       setPending(false)
+    }
+    // Backup status is a follow-up probe — its latency must never block
+    // the analyze button's pending state.
+    try {
+      const st = await invoke<BackupStatus | null>('backup_status', { path })
+      setBackup(st)
+    } catch {
+      /* ignore — backup status is informational */
     }
   }
 
@@ -423,14 +465,26 @@ export default function App() {
   const inv = report?.pak_inventory
 
   return (
-    <main className="layout">
-      <header>
-        <h1>shrinkray</h1>
-        <span className="muted">UE game folder optimizer · v0.4.0-dev</span>
-        <span className={`mode-badge ${previewOnly ? 'mode-preview' : 'mode-write'}`}>
-          {previewOnly ? 'preview' : 'WRITE'}
-        </span>
-      </header>
+    <div className="window app-shell active glass">
+      <TitleBar title="shrinkray" subtitle="UE game folder optimizer · v0.5.0" />
+      {folderDialogOpen && (
+        <OpenDialog
+          mode="folder"
+          initialPath={path}
+          recent={loadRecent()}
+          onConfirm={onFolderChosen}
+          onCancel={() => setFolderDialogOpen(false)}
+        />
+      )}
+      <main className="window-body layout">
+        <div className="wizard-intro">
+          <p className="wizard-intro-blurb">
+            Trim, audit, and inspect your Unreal Engine game folders. Preview-only by default.
+          </p>
+          <span className={`mode-badge ${previewOnly ? 'mode-preview' : 'mode-write'}`}>
+            {previewOnly ? 'preview mode' : 'WRITE mode'}
+          </span>
+        </div>
 
       <section className="drop">
         <label className="preview-toggle">
@@ -473,6 +527,8 @@ export default function App() {
       {audit && <AuditCard report={audit} />}
 
       <AssetInspector />
+
+      <MipStripPanel />
 
       {backup && (
         <section className="report backup-card">
@@ -901,7 +957,8 @@ export default function App() {
           )}
         </section>
       )}
-    </main>
+      </main>
+    </div>
   )
 }
 

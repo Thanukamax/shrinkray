@@ -83,12 +83,20 @@ pub fn analyze(root: &Path) -> AnalysisReport {
 
         let kind: &'static str = match ext.as_str() {
             "pak" | "utoc" | "ucas" => {
-                report.paks.count += 1;
-                report.paks.size += size;
-                if ext == "pak" {
-                    pak_paths.push(abs.to_path_buf());
+                // Skip CEF3 locale bundles — they share the .pak extension
+                // but are Chromium localization archives, not UE paks. They
+                // would otherwise pollute the pak inventory + encryption
+                // detector with dozens of bogus "unreadable" entries.
+                if is_cef_locale_pak(abs) {
+                    "other"
+                } else {
+                    report.paks.count += 1;
+                    report.paks.size += size;
+                    if ext == "pak" {
+                        pak_paths.push(abs.to_path_buf());
+                    }
+                    "pak"
                 }
-                "pak"
             }
             "dds" | "png" | "tga" | "bmp" | "jpg" | "jpeg" => {
                 report.textures.count += 1;
@@ -149,6 +157,15 @@ fn rel_path(p: &Path, root: &Path) -> String {
         .unwrap_or(p)
         .to_string_lossy()
         .into_owned()
+}
+
+/// CEF (Chromium Embedded Framework) ships its localization data as `.pak`
+/// files, which collides with the UE pak extension. They sit under
+/// `Engine/Binaries/ThirdParty/CEF3/...` or any path with `/CEF3/`. We never
+/// treat them as UE paks for inventory + classification.
+pub(crate) fn is_cef_locale_pak(p: &Path) -> bool {
+    let s = p.to_string_lossy().replace('\\', "/").to_ascii_lowercase();
+    s.contains("/cef3/") || s.contains("/cef/")
 }
 
 /// Returns the detected language code for a path containing `L10N/<lang>/...`

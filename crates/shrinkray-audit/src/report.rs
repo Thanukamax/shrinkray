@@ -181,6 +181,12 @@ fn category_pretty(c: Category) -> &'static str {
         Category::EditorLeftovers => "Editor leftovers",
         Category::LauncherSatellite => "Launcher language satellites",
         Category::ChunkingQuality => "Chunking strategy",
+        Category::ShaderRhiRedundancy => "Shader-cache RHI redundancy",
+        Category::RedistInstaller => "Redistributable installers",
+        Category::PlatformSiblings => "Multi-platform binaries",
+        Category::DuplicateContent => "Duplicate content",
+        Category::ModManagerArtifacts => "Mod-manager leftovers",
+        Category::CefLocales => "CEF locale bundles",
     }
 }
 

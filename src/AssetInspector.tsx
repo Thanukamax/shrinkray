@@ -1,6 +1,6 @@
 import { useMemo, useState } from 'react'
 import { invoke } from '@tauri-apps/api/core'
-import { open } from '@tauri-apps/plugin-dialog'
+import { OpenDialog } from './OpenDialog'
 
 export type AssetEntry = {
   path: string
@@ -25,6 +25,20 @@ export type ListAssetsResult = {
 export type ExportInfo = { name: string; class_name: string; serial_size: number }
 export type ImportInfo = { object_name: string; class_name: string; outer_package: string }
 export type CustomVersionEntry = { key: string; version: number }
+export type MipDescriptor = {
+  index: number
+  width: number
+  height: number
+  byte_size: number
+}
+export type TextureInfo = {
+  name: string
+  class_name: string
+  pixel_format: string
+  mip_count: number
+  mips: MipDescriptor[]
+  total_bytes: number
+}
 export type InspectAssetResult = {
   pak_path: string
   asset_path: string
@@ -35,6 +49,7 @@ export type InspectAssetResult = {
   custom_versions: CustomVersionEntry[]
   exports: ExportInfo[]
   imports: ImportInfo[]
+  textures: TextureInfo[]
 }
 
 type Filter = 'all' | 'package' | 'payload' | 'audio' | 'texture' | 'other'
@@ -76,14 +91,15 @@ export function AssetInspector() {
   const [loadingDetail, setLoadingDetail] = useState(false)
   const [detailError, setDetailError] = useState<string | null>(null)
 
-  async function pickPak() {
+  const [pakDialogOpen, setPakDialogOpen] = useState(false)
+
+  function pickPak() {
     setError(null)
-    const sel = await open({
-      multiple: false,
-      title: 'Pick a .pak file to inspect',
-      filters: [{ name: 'UE pak', extensions: ['pak'] }],
-    })
-    if (typeof sel !== 'string') return
+    setPakDialogOpen(true)
+  }
+
+  async function onPakChosen(sel: string) {
+    setPakDialogOpen(false)
     setLoading(true)
     setDetail(null)
     setDetailFor(null)
@@ -148,8 +164,19 @@ export function AssetInspector() {
       .slice(0, 300)
   }, [result, filter, query])
 
+  const empty = !result && !error && !loading
   return (
-    <section className="report inspector-card">
+    <section className={`report inspector-card${empty ? ' inspector-card--empty' : ''}`}>
+      {pakDialogOpen && (
+        <OpenDialog
+          mode="pak"
+          initialPath={result?.pak_path
+            ? result.pak_path.replace(/\/[^/]+$/, '')
+            : null}
+          onConfirm={onPakChosen}
+          onCancel={() => setPakDialogOpen(false)}
+        />
+      )}
       <header className="inspector-head">
         <div>
           <h2>
@@ -161,7 +188,11 @@ export function AssetInspector() {
             L10N inside encrypted-sibling paks) coming in v0.5.
           </p>
         </div>
-        <button onClick={pickPak} disabled={loading}>
+        <button
+          onClick={pickPak}
+          disabled={loading}
+          className={empty ? 'primary' : ''}
+        >
           {loading ? 'reading…' : result ? 'pick different pak' : 'choose .pak'}
         </button>
       </header>
@@ -368,6 +399,46 @@ export function AssetInspector() {
                         </>
                       )}
 
+                      {detail.textures && detail.textures.length > 0 && (
+                        <>
+                          {detail.textures.slice(0, 6).map((t, ti) => (
+                            <div key={ti} className="texture-block">
+                              <h4 className="inspector-detail-sub">
+                                texture · {t.name}{' '}
+                                <span className="muted small">
+                                  {t.class_name} · {t.pixel_format} · {t.mip_count} mip(s) · {formatBytes(t.total_bytes)}
+                                </span>
+                              </h4>
+                              <table className="inspector-table mip-table">
+                                <thead>
+                                  <tr>
+                                    <th>mip</th>
+                                    <th>w</th>
+                                    <th>h</th>
+                                    <th className="size-col">bytes</th>
+                                  </tr>
+                                </thead>
+                                <tbody>
+                                  {t.mips.map((m) => (
+                                    <tr key={m.index}>
+                                      <td>{m.index}</td>
+                                      <td>{m.width}</td>
+                                      <td>{m.height}</td>
+                                      <td className="size">{formatBytes(m.byte_size)}</td>
+                                    </tr>
+                                  ))}
+                                </tbody>
+                              </table>
+                            </div>
+                          ))}
+                          {detail.textures.length > 6 && (
+                            <p className="muted small">
+                              …and {detail.textures.length - 6} more texture(s)
+                            </p>
+                          )}
+                        </>
+                      )}
+
                       {detail.custom_versions.length > 0 && (
                         <>
                           <h4 className="inspector-detail-sub">custom versions</h4>
@@ -396,9 +467,9 @@ export function AssetInspector() {
       )}
 
       {!result && !error && !loading && (
-        <p className="placeholder">
-          Pick any .pak file — modded paks, asset flips, dev builds, or a normal
-          UE4 game — to peek at its cooked entries.
+        <p className="placeholder inspector-empty-hint">
+          Works on modded paks, asset flips, dev builds, and cooked UE4 or UE5
+          games. Encrypted paks surface the AES affordance instead of erroring.
         </p>
       )}
     </section>

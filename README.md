@@ -51,59 +51,95 @@ shrinkray refuses to write without a backup. On first run it offers:
 
 | Phase | What | State |
 |---|---|---|
-| 0 | Scaffold + folder census by extension, rough savings estimate | ✅ |
-| 1 | Scan & report + differential backup/restore + loose-file recompression (png/wav/flac → oxipng/opus) + L10N stripping + pak *trimming* (drop entries, not recompress) + dry-run + diff report UI + Lyra crash-watchdog CI | ⏳ |
-| 2 | Cooked-asset surgery via bundled .NET sidecar (CUE4Parse + UAssetAPI): texture mip-strip, audio L10N replacement inside paks. `retoc` IoStore support. Vorbis → Opus opt-in. Tier 3 SSIM validation. AES key handling. | ⏳ |
-| 3+ | Mesh LOD strip, orphan-asset cross-reference, FFmpeg escape hatch, Bink (if a free path appears), CLI binary alongside GUI | ⏳ |
+| 0 | Scaffold + folder census by extension, rough savings estimate | ✅ v0.1 |
+| 1 | Scan & report + differential backup/restore + loose-file recompression (png/wav/flac → oxipng/opus) + L10N stripping + pak *trimming* (drop entries, not recompress) + dry-run + diff report UI | ✅ v0.3 |
+| 1.5 | Read-only multi-detector bloat audit (13 detectors), Win7 Aero UI redesign, in-app file dialog, custom title bar | ✅ v0.4 + v0.5 |
+| 2 read-side | Cooked-asset inspection via bundled .NET sidecar (CUE4Parse master, vendored): texture mip-strip projection (byte-exact via per-format formula), per-package inspection (mip table, custom-version fingerprint, export list) | ✅ v0.5 |
+| 2 write-side | Cooked `.uasset/.uexp/.ubulk` rewrite — texture mip strip apply, audio L10N replacement inside paks. Needs UAssetAPI bundle. | ⏳ v0.6 |
+| 2 IoStore | `retoc` integration for UE5 AAA `.utoc`/`.ucas` containers. AES key handling. | ⏳ v0.7 |
+| 3+ | Vorbis → Opus opt-in, SSIM validation, mesh LOD strip, orphan-asset cross-reference, screenshot-diff launch validation | ⏳ |
 
 The original 6-phase roadmap was rewritten after research — see `research/SUMMARY.md` for the full reasoning.
 
 ## Stack
 
 - **Tauri v2** + **Bun** + **Vite** + **React 19** + **TypeScript** (mirrors [vn2apk](https://github.com/Thanukamax/vn2apk) + [wgpu-shader-explorer](https://github.com/Thanukamax/wgpu-shader-explorer) pattern)
-- **Rust core:** `walkdir`, `tauri-plugin-dialog` (Phase 0). Phase 1 adds `repak` 0.2.3, `image_dds`, `intel_tex_2`, `symphonia`, `opus`, `image-compare`, `rayon`. Optionally `vorbis_rs` for opt-in Vorbis decode.
-- **Phase 2 sidecar:** bundled .NET 8 self-contained CLI wrapping CUE4Parse + UAssetAPI, JSON over stdin/stdout. ~70 MB one-time install cost.
-- **Shell-out binaries (Phase 1):** `oxipng`. Optional: `mozjpeg`, `cwebp`.
-- **Not used:** FFmpeg (license + binary-size cost), `unreal_asset` crate (UE5 coverage too shallow), Bink anything.
+- **Rust core:** `walkdir`, `tauri-plugin-dialog`, `repak` 0.2.3, `sha2`, `dirs`. Phase 1 adds `image_dds`, `intel_tex_2`, `symphonia`, `opus`, `image-compare`, `rayon` opt-in.
+- **Phase 2 sidecar:** .NET 8 self-contained CLI vendoring **CUE4Parse master** (Apache 2.0) as a Git submodule at `sidecar/external/CUE4Parse/`. JSON-over-stdin IPC. ~75 MB published binary. Three additive patches to CUE4Parse to handle UE4.13-era cook layouts — see `CHANGELOG.md` v0.5.0.
+- **Frontend:** 7.css for native Win7 Aero chrome (`.window`, `.title-bar`, fieldset/button styling).
+- **Shell-out binaries:** `oxipng`. Optional: `mozjpeg`, `cwebp`.
+- **Not used (yet):** FFmpeg, `unreal_asset` crate, Bink anything. UAssetAPI bundle pending v0.6 write-side.
 
 ## Quick start
 
 ```bash
+# Clone WITH submodules (CUE4Parse lives under sidecar/external/CUE4Parse)
+git clone --recurse-submodules https://github.com/Thanukamax/shrinkray
+cd shrinkray
+
+# Or if you already cloned without --recurse-submodules:
+git submodule update --init
+
 bun install
 cd src-tauri && cargo fetch && cd ..
+
+# Build the .NET sidecar (requires dotnet 8 SDK)
+bash scripts/build-sidecar.sh
+
 python3 scripts/generate_icons.py    # placeholder icons; one-time
 bun run tauri dev                    # window at localhost:1420
 bun run tauri build                  # production binary
 ```
 
-The current build (v0.4.0-dev) does:
-- **analyze** — folder census + L10N detection + pak inventory (signed/encrypted/readable) + top 50 fattest files
-- **bloat audit** *(new in v0.4)* — read-only multi-detector report surfacing structural inefficiencies: patch overlay accumulation, stale version directories, sharded video paks, oversized chunks, encryption status, editor leftovers, launcher language satellites. Works on encrypted installs (where content surgery is impossible). 0-100 bloat score + Markdown/JSON output.
+The current build (v0.5.0) does:
+- **analyze** — folder census + L10N detection + pak inventory (signed / encrypted / readable / IoStore stub) + top 50 fattest files. CEF locale `.pak` files correctly filtered out.
+- **bloat audit** — read-only multi-detector report surfacing structural inefficiencies. 13 detectors:
+  - `patch_overlay`, `stale_version_dir`, `sharded_videos`, `large_chunk`, `encryption` (with IoStore stub detection), `editor_leftovers`, `launcher_satellite` *(v0.4)*
+  - `shader_rhi_redundancy`, `redist_installer`, `platform_siblings`, `mod_manager_artifacts`, `duplicate_content` (SHA-256), `cef_locales` *(v0.5)*
+  - 0–100 bloat score + Markdown/JSON output. Works on encrypted installs (where content surgery is impossible).
+- **asset inspector** *(v0.5)* — drill into a single cooked `.uasset` via the .NET sidecar: full export list, class names, custom-version fingerprint, mip table per texture (per-mip dimensions + byte sizes), with pagination, search, and payload/package filters.
+- **texture mip strip projection** *(v0.5)* — walk every UTexture-derived export in a readable pak, project the savings from capping mip 0 dimension. Per-format BC/ASTC byte formula. **Pamali UE4 demo: 185 textures → 570 MB save at 1024 px cap (77 %).** Read-only; write-side lands v0.6 via UAssetAPI.
 - **L10N strip + pak trim** — drop dub languages from loose files and from inside paks
 - **loose-file recompression** — PNG via `oxipng`, WAV/FLAC → Opus via `opusenc` (both detected at runtime, install hints surfaced if missing)
 - **differential backup + restore** — every destructive op is preceded by a `shrinkray_backup/` entry; restore replays the manifest in reverse with hash verification
 - **preview-only mode** — default-on for first-time users; hard-disables every apply button
-- **CLI** *(new in v0.4)* — `shrinkray audit <path> [--json] [--out FILE]`. Run from a terminal, share the markdown output, paste it into a bug report.
+- **Win7 Aero UI** *(v0.5)* — custom title bar (Tauri OS decorations off), 7.css window chrome, frosted-glass title bar, in-app Win7-style file dialog (replaces the OS-native picker), procedurally-generated Aero wallpaper.
+- **CLI** — `shrinkray audit <path> [--json] [--out FILE]`. Run from a terminal, share the markdown output, paste it into a bug report.
 
-System tool deps (Linux): `opus-tools` (for `opusenc`), optionally `oxipng` (install via `cargo install oxipng` or your distro).
+System tool deps (Linux): `dotnet-sdk-8.0`, `opus-tools` (for `opusenc`), `libz-ng.so.2` (Fedora/Nobara ships it; Debian/Ubuntu: `apt install libz-ng`). Optionally `oxipng` (via `cargo install oxipng` or your distro). Recommended for sidecar native helpers: `cmake` + a C/C++ toolchain (Linux build works without them — the native blob is optional).
 
 ## Layout
 
 ```
 src/                                # React frontend
+  App.tsx                           # top-level shell + sections
+  TitleBar.tsx                      # custom Aero title bar (v0.5)
+  OpenDialog.tsx                    # in-app Win7 Open dialog (v0.5)
+  AssetInspector.tsx                # cooked .uasset drill-down (v0.5)
+  MipStripPanel.tsx                 # texture mip-strip projection (v0.5)
+  assets/wallpaper.jpg              # procedurally-generated Aero bg (v0.5)
 crates/
   shrinkray-core/src/               # destructive-write subsystems
-    analyze.rs                      # folder census + L10N detection
+    analyze.rs                      # folder census + L10N detection + CEF filter
     pak.rs                          # repak wrapper + pak classification
     backup.rs                       # differential backup + restore
     strip.rs                        # L10N stripping + pak trimming
     recompress.rs                   # PNG/WAV/FLAC recompression via shell-outs
-  shrinkray-audit/src/              # read-only bloat audit (v0.4)
+  shrinkray-audit/src/              # read-only bloat audit (v0.4 + 6 detectors v0.5)
+    detectors/                      # one .rs per detector, 13 total
+  shrinkray-sidecar/src/            # Rust IPC client + types for the .NET sidecar
   shrinkray-cli/src/                # CLI binary — `shrinkray audit|analyze|...`
-src-tauri/src/                      # thin Tauri wrapper around core+audit
+sidecar/
+  ShrinkraySidecar/                 # .NET 8 sidecar (CUE4Parse host)
+    AssetInspector.cs               # per-package inspection + mip table
+    AssetLister.cs                  # pak entry enumeration via PakFileReader
+    StripMipsPlanner.cs             # walk + project mip-strip savings (v0.5)
+    Program.cs                      # JSON-over-stdin dispatcher
+  external/CUE4Parse/               # Git submodule — CUE4Parse master + 3 patches
+src-tauri/src/                      # thin Tauri wrapper around core+audit+sidecar
   lib.rs                            # tauri::commands wiring
 research/                           # research notes (A-E + SUMMARY) — read before contributing
-scripts/                            # generate_icons.py, lyra-smoke.sh
+scripts/                            # generate_icons.py, build-sidecar.sh, lyra-smoke.sh
 .github/workflows/                  # CI (cargo test + clippy + bun build)
 ```
 
