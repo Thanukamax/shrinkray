@@ -1,3 +1,6 @@
 [submodule "sidecar/external/CUE4Parse"]
 	path = sidecar/external/CUE4Parse
 	url = https://github.com/FabianFG/CUE4Parse.git
+[submodule "sidecar/external/UAssetAPI"]
+	path = sidecar/external/UAssetAPI
+	url = https://github.com/atenfyr/UAssetAPI.git

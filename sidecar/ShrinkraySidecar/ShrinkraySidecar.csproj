@@ -20,6 +20,12 @@
          FTexturePlatformData on cooked textures; master invokes it from
          UTexture.Deserialize so PlatformData.Mips is non-empty after load. -->
     <ProjectReference Include="..\external\CUE4Parse\CUE4Parse\CUE4Parse.csproj" />
+    <!-- UAssetAPI (atenfyr/UAssetAPI) — used for the v0.6 write-side path:
+         opens .uasset/.uexp/.ubulk triples, exposes Export.Extras byte[]
+         for post-tagged-property data, handles ExportMap offset fixups on
+         re-serialize. The TargetFramework is patched down to net8 on the
+         submodule branch to match the sidecar. -->
+    <ProjectReference Include="..\external\UAssetAPI\UAssetAPI\UAssetAPI.csproj" />
   </ItemGroup>
 
 </Project>
