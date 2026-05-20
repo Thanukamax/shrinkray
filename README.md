@@ -71,40 +71,14 @@ today; byte-exact write lands in v0.6.
 
 ## Screenshots
 
-> Drop the PNGs listed in [`docs/screenshots/README.md`](docs/screenshots/README.md) and they'll render here automatically.
+<div align="center">
+  <img src="docs/screenshots/hero.png" alt="shrinkray main window — Win7 Aero chrome over the procedurally-generated wallpaper, preview-mode pill on the header, pick-folder + Inspect-a-pak + Texture-mip-strip panels stacked vertically" width="900" />
+  <br /><sub><b>Main window</b> — Aero chrome, preview-mode default-on, the three Phase 2 entry panels (pick folder · Inspect a pak · Texture mip strip)</sub>
+</div>
 
-<table>
-<tr>
-<td width="50%" align="center">
-  <img src="docs/screenshots/hero.png" alt="Main window — Aero chrome with analyze + audit panels" />
-  <br /><sub><b>Main window</b> — Aero chrome, analyze + audit side by side</sub>
-</td>
-<td width="50%" align="center">
-  <img src="docs/screenshots/audit.png" alt="Bloat audit panel with findings and 0–100 score" />
-  <br /><sub><b>Bloat audit</b> — 13 detectors, 0–100 score, JSON / Markdown export</sub>
-</td>
-</tr>
-<tr>
-<td width="50%" align="center">
-  <img src="docs/screenshots/inspector.png" alt="Asset Inspector showing a cooked uasset with mip table" />
-  <br /><sub><b>Asset Inspector</b> — drill into a cooked .uasset, see the mip table</sub>
-</td>
-<td width="50%" align="center">
-  <img src="docs/screenshots/mip-strip.png" alt="Mip Strip Panel projecting the Pamali 570 MB / 77 % win" />
-  <br /><sub><b>Mip-strip projection</b> — per-format byte formula, no transcode</sub>
-</td>
-</tr>
-<tr>
-<td width="50%" align="center">
-  <img src="docs/screenshots/analyze.png" alt="Analyze report with folder census, language detection, top-50 fattest" />
-  <br /><sub><b>Analyze</b> — census, L10N, pak inventory, top-50 fattest</sub>
-</td>
-<td width="50%" align="center">
-  <img src="docs/screenshots/dialog.png" alt="In-app Win7-style Open dialog with quick links and drives" />
-  <br /><sub><b>In-app file dialog</b> — Win7-style picker, replaces the OS native</sub>
-</td>
-</tr>
-</table>
+<br />
+
+> More panels (analyze report, bloat audit, asset inspector, mip-strip projection, in-app file dialog) land in [`docs/screenshots/`](docs/screenshots/README.md) as we capture them.
 
 ---
 
