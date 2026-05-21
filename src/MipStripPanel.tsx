@@ -1,4 +1,4 @@
-import { useMemo, useState } from 'react'
+import { useEffect, useMemo, useState } from 'react'
 import { invoke } from '@tauri-apps/api/core'
 import { OpenDialog } from './OpenDialog'
 
@@ -13,17 +13,10 @@ type StripMipsItem = {
   kept_mip_count: number
   save_bytes: number
   original_bytes: number
+  compression_settings: string | null
 }
 
 type ClassCount = { class_name: string; count: number }
-
-type ApplyStripMipsStub = {
-  implemented: boolean
-  phase: string
-  message: string
-  backup_required: boolean
-  requires: string[]
-}
 
 type PlanStripMipsResult = {
   pak_path: string
@@ -35,6 +28,50 @@ type PlanStripMipsResult = {
   total_texture_bytes: number
   truncated: boolean
   class_histogram?: ClassCount[]
+}
+
+type RestoreClass = 'ai_upscale' | 'exact_backup' | 'no_strip'
+
+type PlannedTexture = {
+  asset_path: string
+  export_name: string
+  class: RestoreClass
+  pixel_format: string
+}
+
+type RestoreAiPlan = {
+  policy: string
+  textures: PlannedTexture[]
+  ai_count: number
+  backup_count: number
+  skip_count: number
+  executor_ready: boolean
+  executor_phase: string
+  executor_notes: string[]
+}
+
+type StripAppliedFile = { pak_path: string; bytes_base64: string }
+
+type StripAppliedTexture = {
+  asset_path: string
+  export_name: string
+  drop_mip_count: number
+  kept_mip_count: number
+  original_top_dim: number
+  kept_top_dim: number
+  saved_bytes: number
+  files: StripAppliedFile[]
+  original_files: StripAppliedFile[]
+}
+
+type StripSkipped = { asset_path: string; reason: string }
+
+type ApplyStripMipsResult = {
+  pak_path: string
+  engine_version: string
+  applied: StripAppliedTexture[]
+  skipped: StripSkipped[]
+  total_saved_bytes: number
 }
 
 const MAX_DIMS = [4096, 2048, 1024, 512]
@@ -52,6 +89,25 @@ const GAME_VERSIONS = [
   { value: 'GAME_UE4_22', label: 'UE4.22 (Pamali-era)' },
 ]
 
+// Engine-version → UAssetAPI EngineVersion string. The .NET sidecar takes a
+// UAssetAPI enum name (VER_UE4_22 etc) for the write-side parser. Best-effort
+// mapping; falls back to AUTOMATIC if unknown.
+function uassetapiVerFor(game: string): string {
+  const m: Record<string, string> = {
+    GAME_UE4_22: 'VER_UE4_22',
+    GAME_UE4_25: 'VER_UE4_25',
+    GAME_UE4_27: 'VER_UE4_27',
+    GAME_UE4_LATEST: 'VER_UE4_27',
+    GAME_UE5_0: 'VER_UE5_0',
+    GAME_UE5_3: 'VER_UE5_3',
+    GAME_UE5_4: 'VER_UE5_4',
+    GAME_UE5_5: 'VER_UE5_5',
+    GAME_UE5_6: 'VER_UE5_6',
+    GAME_UE5_LATEST: 'VER_UE5_6',
+  }
+  return m[game] ?? 'VER_UE4_AUTOMATIC_VERSION'
+}
+
 function formatBytes(b: number): string {
   if (!b) return '0 B'
   const u = ['B', 'KB', 'MB', 'GB', 'TB']
@@ -64,26 +120,82 @@ function formatBytes(b: number): string {
   return `${n.toFixed(n < 10 && i > 0 ? 2 : 1)} ${u[i]}`
 }
 
+function classLabel(c: RestoreClass): string {
+  switch (c) {
+    case 'ai_upscale':
+      return 'AI'
+    case 'exact_backup':
+      return 'backup'
+    case 'no_strip':
+      return 'skip'
+  }
+}
+
+function classClass(c: RestoreClass): string {
+  switch (c) {
+    case 'ai_upscale':
+      return 'restore-ai'
+    case 'exact_backup':
+      return 'restore-backup'
+    case 'no_strip':
+      return 'restore-skip'
+  }
+}
+
 export function MipStripPanel() {
   const [pak, setPak] = useState<string | null>(null)
   const [maxDim, setMaxDim] = useState<number>(2048)
   const [game, setGame] = useState<string>('GAME_UE5_LATEST')
   const [dialogOpen, setDialogOpen] = useState(false)
   const [plan, setPlan] = useState<PlanStripMipsResult | null>(null)
+  const [aiPlan, setAiPlan] = useState<RestoreAiPlan | null>(null)
   const [loading, setLoading] = useState(false)
   const [error, setError] = useState<string | null>(null)
-  const [applyStub, setApplyStub] = useState<ApplyStripMipsStub | null>(null)
+  const [applyResult, setApplyResult] = useState<ApplyStripMipsResult | null>(null)
+  const [applying, setApplying] = useState(false)
+  const [exemptNormals, setExemptNormals] = useState(true)
+
+  // Map asset_path → RestoreClass, derived from aiPlan. Used to render the
+  // routing per row + to filter the apply targets (skip "no_strip" textures).
+  const classByAsset = useMemo(() => {
+    const m = new Map<string, RestoreClass>()
+    if (aiPlan) {
+      for (const t of aiPlan.textures) m.set(t.asset_path, t.class)
+    }
+    return m
+  }, [aiPlan])
 
   async function tryApply() {
-    if (!pak) return
-    setApplyStub(null)
+    if (!pak || !plan) return
+    setApplyResult(null)
+    setApplying(true)
+    setError(null)
     try {
-      const r = await invoke<ApplyStripMipsStub>('sidecar_apply_strip_mips', {
+      // Filter: drop NoStrip-class textures (data textures / lookups) and,
+      // when exemptNormals is on, drop ExactBackup-class too (normals etc).
+      // Leave that filtering to v0.6.0 final — for rc1 we send all items and
+      // let the sidecar's parser decide what it can handle. The skip-reason
+      // diagnostic surfaces both classifier-driven skips and parser-stage skips.
+      const targets = plan.items
+        .filter((it) => {
+          const c = classByAsset.get(it.asset_path)
+          if (c === 'no_strip') return false
+          if (exemptNormals && c === 'exact_backup') return false
+          return true
+        })
+        .map((it) => ({ asset_path: it.asset_path, max_dim: maxDim }))
+
+      const r = await invoke<ApplyStripMipsResult>('sidecar_apply_strip_mips', {
         pakPath: pak,
+        targets,
+        game,
+        engineVersion: uassetapiVerFor(game),
       })
-      setApplyStub(r)
+      setApplyResult(r)
     } catch (e) {
       setError(String(e))
+    } finally {
+      setApplying(false)
     }
   }
 
@@ -91,6 +203,8 @@ export function MipStripPanel() {
     setLoading(true)
     setError(null)
     setPlan(null)
+    setAiPlan(null)
+    setApplyResult(null)
     try {
       const r = await invoke<PlanStripMipsResult>('sidecar_plan_strip_mips', {
         pakPath,
@@ -99,6 +213,22 @@ export function MipStripPanel() {
         game: g,
       })
       setPlan(r)
+      // Second call: ask the classifier for per-texture restore routing.
+      // Same pak + max_dim so the planner items line up 1:1 with the AI plan.
+      try {
+        const ai = await invoke<RestoreAiPlan>('sidecar_plan_restore_ai', {
+          pakPath,
+          maxDim: dim,
+          limit: 5000,
+          game: g,
+          policy: 'smart',
+        })
+        setAiPlan(ai)
+      } catch (_e) {
+        // Don't fail the whole panel if the AI plan can't be computed —
+        // restore classes are presentational, the planner data is the load-bearing piece.
+        setAiPlan(null)
+      }
     } catch (e) {
       setError(String(e))
     } finally {
@@ -127,9 +257,6 @@ export function MipStripPanel() {
       ? (plan.total_save_bytes / plan.total_texture_bytes) * 100
       : 0
 
-  // Aggregate items by pixel format so the user can see which formats
-  // dominate the savings — useful for diagnosing whether a game is BC1-heavy
-  // (UI / masks) vs BC5-heavy (normal maps) vs BC7 (modern albedos).
   const formatBreakdown = useMemo(() => {
     if (!plan) return [] as { format: string; count: number; save: number }[]
     const m = new Map<string, { count: number; save: number }>()
@@ -144,6 +271,24 @@ export function MipStripPanel() {
       .sort((a, b) => b.save - a.save)
   }, [plan])
 
+  // Skip-reason histogram for the apply result. Multiple textures can share
+  // the same reason ("inline payload mip", "asset not found", etc); collapse
+  // them so the UI doesn't render hundreds of identical lines.
+  const skipHistogram = useMemo(() => {
+    if (!applyResult) return [] as { reason: string; count: number }[]
+    const m = new Map<string, number>()
+    for (const s of applyResult.skipped) {
+      m.set(s.reason, (m.get(s.reason) ?? 0) + 1)
+    }
+    return Array.from(m.entries())
+      .map(([reason, count]) => ({ reason, count }))
+      .sort((a, b) => b.count - a.count)
+  }, [applyResult])
+
+  useEffect(() => {
+    if (plan?.pak_path) document.title = `shrinkray · ${plan.pak_path.split('/').pop()}`
+  }, [plan?.pak_path])
+
   return (
     <section className="report mipstrip-card">
       {dialogOpen && (
@@ -157,16 +302,23 @@ export function MipStripPanel() {
       <header className="inspector-head">
         <div>
           <h2>
-            Texture mip strip <span className="preview-tag">preview · Phase 2</span>
+            Texture mip strip{' '}
+            <span className="preview-tag">v0.6.0-rc1 · apply path in flight</span>
           </h2>
           <p className="muted small inspector-blurb">
-            Pick a readable UE4 .pak and a maximum texture dimension. We walk
-            every cooked texture inside, project the savings from capping mip 0
-            to that dimension, and list the biggest wins. Read-only — the apply
-            path lands once write-side serialization is verified on real games.
+            Pick a readable UE4 .pak and a maximum texture dimension. The plan
+            walks every cooked texture, projects savings, and routes each
+            texture through the classifier (AI re-expand vs exact backup vs
+            skip). v0.6.0-rc1 wires the apply path end-to-end; per-mip parser
+            for UE4.22 cooks is still being pinned down — skipped textures
+            surface their reason inline.
           </p>
         </div>
-        <button onClick={() => setDialogOpen(true)} disabled={loading} className={!pak ? 'primary' : ''}>
+        <button
+          onClick={() => setDialogOpen(true)}
+          disabled={loading || applying}
+          className={!pak ? 'primary' : ''}
+        >
           {loading ? 'planning…' : pak ? 'pick different pak' : 'choose .pak'}
         </button>
       </header>
@@ -180,7 +332,7 @@ export function MipStripPanel() {
                 key={d}
                 className={`chip ${maxDim === d ? 'chip-on' : ''}`}
                 onClick={() => onDimChange(d)}
-                disabled={loading}
+                disabled={loading || applying}
               >
                 {d}px
               </button>
@@ -192,7 +344,7 @@ export function MipStripPanel() {
               className="mipstrip-game"
               value={game}
               onChange={(e) => onGameChange(e.target.value)}
-              disabled={loading}
+              disabled={loading || applying}
             >
               {GAME_VERSIONS.map((g) => (
                 <option key={g.value} value={g.value}>
@@ -203,6 +355,17 @@ export function MipStripPanel() {
             <span className="muted small">
               ← if textures show as 0 on a UE4 game, switch to a UE4 version
             </span>
+          </div>
+          <div className="mipstrip-controls">
+            <label className="muted small">
+              <input
+                type="checkbox"
+                checked={exemptNormals}
+                onChange={(e) => setExemptNormals(e.target.checked)}
+                disabled={applying}
+              />{' '}
+              exempt normals + data textures (recommended — these need byte-exact restore)
+            </label>
           </div>
         </>
       )}
@@ -215,7 +378,9 @@ export function MipStripPanel() {
             <tbody>
               <tr>
                 <th>pak</th>
-                <td className="path-small" title={plan.pak_path}>{plan.pak_path}</td>
+                <td className="path-small" title={plan.pak_path}>
+                  {plan.pak_path}
+                </td>
               </tr>
               <tr>
                 <th>scanned</th>
@@ -240,6 +405,22 @@ export function MipStripPanel() {
                   {formatBytes(plan.total_save_bytes)} ({savePct.toFixed(1)}%)
                 </td>
               </tr>
+              {aiPlan && (
+                <tr>
+                  <th>restore plan</th>
+                  <td>
+                    <span className="restore-ai">AI: {aiPlan.ai_count}</span>{' '}
+                    ·{' '}
+                    <span className="restore-backup">
+                      backup: {aiPlan.backup_count}
+                    </span>{' '}
+                    · <span className="restore-skip">skip: {aiPlan.skip_count}</span>{' '}
+                    <span className="muted small">
+                      (executor in {aiPlan.executor_phase})
+                    </span>
+                  </td>
+                </tr>
+              )}
             </tbody>
           </table>
 
@@ -273,6 +454,8 @@ export function MipStripPanel() {
                 <tr>
                   <th>asset</th>
                   <th>format</th>
+                  <th>compression</th>
+                  <th>restore</th>
                   <th>mip 0</th>
                   <th>→ keep</th>
                   <th>drop</th>
@@ -280,18 +463,27 @@ export function MipStripPanel() {
                 </tr>
               </thead>
               <tbody>
-                {plan.items.slice(0, 200).map((it, i) => (
-                  <tr key={`${it.asset_path}-${i}`}>
-                    <td className="path-small" title={it.asset_path}>
-                      {it.export_name}
-                    </td>
-                    <td className="kind">{it.pixel_format}</td>
-                    <td>{it.current_mip0_dim}px</td>
-                    <td>{it.kept_mip0_dim}px</td>
-                    <td>{it.drop_mip_count}</td>
-                    <td className="size">{formatBytes(it.save_bytes)}</td>
-                  </tr>
-                ))}
+                {plan.items.slice(0, 200).map((it, i) => {
+                  const c = classByAsset.get(it.asset_path)
+                  return (
+                    <tr key={`${it.asset_path}-${i}`}>
+                      <td className="path-small" title={it.asset_path}>
+                        {it.export_name}
+                      </td>
+                      <td className="kind">{it.pixel_format}</td>
+                      <td className="kind">
+                        {it.compression_settings ?? <span className="muted">—</span>}
+                      </td>
+                      <td className={c ? classClass(c) : ''}>
+                        {c ? classLabel(c) : '?'}
+                      </td>
+                      <td>{it.current_mip0_dim}px</td>
+                      <td>{it.kept_mip0_dim}px</td>
+                      <td>{it.drop_mip_count}</td>
+                      <td className="size">{formatBytes(it.save_bytes)}</td>
+                    </tr>
+                  )
+                })}
               </tbody>
             </table>
           ) : (
@@ -308,28 +500,68 @@ export function MipStripPanel() {
 
           {plan.items.length > 0 && (
             <div className="mipstrip-apply">
-              <button onClick={tryApply} disabled={loading}>
-                apply (write to pak)
+              <button onClick={tryApply} disabled={loading || applying} className="primary">
+                {applying ? 'applying…' : 'apply (write to pak)'}
               </button>
-              {applyStub && !applyStub.implemented && (
+              <p className="muted small">
+                v0.6.0-rc1: applier framework is wired. Targets that hit the
+                in-flight per-mip parser path will land in "skipped" with a
+                diagnostic reason rather than corrupting the pak.
+              </p>
+
+              {applyResult && (
                 <div className="mipstrip-apply-note">
-                  <strong>{applyStub.phase} — write-side not yet implemented.</strong>
-                  <p className="muted small">{applyStub.message}</p>
-                  {applyStub.requires.length > 0 && (
-                    <ul className="reasons">
-                      {applyStub.requires.map((r) => (
-                        <li key={r}>{r}</li>
-                      ))}
-                    </ul>
+                  <strong>
+                    applied: {applyResult.applied.length} · skipped:{' '}
+                    {applyResult.skipped.length} · saved:{' '}
+                    {formatBytes(applyResult.total_saved_bytes)}
+                  </strong>
+                  {skipHistogram.length > 0 && (
+                    <details>
+                      <summary>
+                        skip reasons ({skipHistogram.length} distinct)
+                      </summary>
+                      <ul className="reasons">
+                        {skipHistogram.map((s) => (
+                          <li key={s.reason}>
+                            <span className="muted small">
+                              {s.count.toLocaleString()} ×
+                            </span>{' '}
+                            {s.reason}
+                          </li>
+                        ))}
+                      </ul>
+                    </details>
+                  )}
+                  {applyResult.applied.length === 0 && (
+                    <p className="muted small">
+                      Nothing applied yet. The framework is wired end-to-end
+                      (extract → parse → splice → regen → write back); the
+                      per-mip layout pin-down lands in v0.6.0 final. Original
+                      pak is untouched.
+                    </p>
                   )}
                 </div>
               )}
             </div>
           )}
 
+          {aiPlan && aiPlan.executor_notes.length > 0 && (
+            <details className="mipstrip-diag">
+              <summary>v0.7 AI restore executor — pending notes</summary>
+              <ul className="reasons">
+                {aiPlan.executor_notes.map((n) => (
+                  <li key={n}>{n}</li>
+                ))}
+              </ul>
+            </details>
+          )}
+
           {plan.class_histogram && plan.class_histogram.length > 0 && (
             <details className="mipstrip-diag">
-              <summary>diagnostic · export classes seen ({plan.class_histogram.length})</summary>
+              <summary>
+                diagnostic · export classes seen ({plan.class_histogram.length})
+              </summary>
               <ul className="reasons">
                 {plan.class_histogram.map((c) => (
                   <li key={c.class_name}>
@@ -339,9 +571,9 @@ export function MipStripPanel() {
                 ))}
               </ul>
               <p className="muted small">
-                If "Texture2D" / "TextureCube" appears here but `textures: 0` above,
-                CUE4Parse loaded them as untyped UObject — typed cast needs another
-                engine version or a derived class match.
+                If "Texture2D" / "TextureCube" appears here but `textures: 0`
+                above, CUE4Parse loaded them as untyped UObject — typed cast
+                needs another engine version or a derived class match.
               </p>
             </details>
           )}
@@ -351,8 +583,8 @@ export function MipStripPanel() {
       {!pak && !error && !loading && (
         <p className="placeholder inspector-empty-hint">
           Drop in a readable UE4 .pak (UE5 IoStore paks need retoc, coming in
-          a later Phase 2 step). Pamali / asset flips / dev builds are good test
-          targets.
+          a later Phase 2 step). Pamali / asset flips / dev builds are good
+          test targets.
         </p>
       )}
     </section>

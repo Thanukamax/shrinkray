@@ -175,26 +175,50 @@ public static class Program
     }
 
     /// <summary>
-    /// v0.6 stub. The write-side requires either UAssetAPI integration (to
-    /// rewrite cooked .uasset/.uexp/.ubulk in place) or a custom binary
-    /// surgery pass. Both are non-trivial and land in v0.6. This stub locks
-    /// the IPC shape so the frontend can render a proper "what's next" state
-    /// without 404ing on the command.
+    /// v0.6 write-side: for each (asset_path, max_dim) target inside a pak,
+    /// rewrite the .uasset Extras byte buffer to drop top mips above max_dim
+    /// and regenerate the .ubulk with surviving mip payloads only. Returns
+    /// modified bytes (base64) keyed by pak-relative path so the Rust side
+    /// can substitute them in a repak rewrite. Also returns the original
+    /// bytes so backup.rs can record them for restore.
     /// </summary>
     private static object HandleApplyStripMips(JsonElement? args)
     {
-        return new
+        if (args is null) throw new ArgumentException("apply_strip_mips requires args.pak_path + args.targets");
+        var pakPath = args.Value.TryGetProperty("pak_path", out var p)
+            ? p.GetString() ?? throw new ArgumentException("pak_path must be string")
+            : throw new ArgumentException("missing pak_path");
+        if (!args.Value.TryGetProperty("targets", out var t) || t.ValueKind != JsonValueKind.Array)
+            throw new ArgumentException("missing targets array");
+
+        var targets = new List<StripTarget>();
+        foreach (var item in t.EnumerateArray())
         {
-            implemented = false,
-            phase = "v0.6",
-            message =
-                "apply_strip_mips is not implemented yet. The read-side (plan_strip_mips) " +
-                "is byte-exact and ready; the write-side needs UAssetAPI integration to " +
-                "rewrite cooked .uasset/.uexp/.ubulk triples and repack into the pak. " +
-                "Track the v0.6 milestone for write-side mip stripping.",
-            backup_required = true,
-            requires = new[] { "UAssetAPI .NET dep", "pak rewriter extension", "LoadPackage validation per rewritten asset" }
-        };
+            var assetPath = item.TryGetProperty("asset_path", out var ap)
+                ? ap.GetString() ?? throw new ArgumentException("target.asset_path must be string")
+                : throw new ArgumentException("missing target.asset_path");
+            int maxDim = item.TryGetProperty("max_dim", out var md) && md.ValueKind == JsonValueKind.Number
+                ? md.GetInt32()
+                : throw new ArgumentException("missing target.max_dim");
+            targets.Add(new StripTarget(assetPath, maxDim));
+        }
+
+        var game = CUE4Parse.UE4.Versions.EGame.GAME_UE5_LATEST;
+        if (args.Value.TryGetProperty("game", out var g) && g.ValueKind == JsonValueKind.String)
+        {
+            var name = g.GetString();
+            if (!string.IsNullOrEmpty(name) && Enum.TryParse<CUE4Parse.UE4.Versions.EGame>(name, true, out var parsed))
+                game = parsed;
+        }
+        var engineVer = UAssetAPI.UnrealTypes.EngineVersion.VER_UE4_AUTOMATIC_VERSION;
+        if (args.Value.TryGetProperty("engine_version", out var ev) && ev.ValueKind == JsonValueKind.String)
+        {
+            var name = ev.GetString();
+            if (!string.IsNullOrEmpty(name) && Enum.TryParse<UAssetAPI.UnrealTypes.EngineVersion>(name, true, out var parsed))
+                engineVer = parsed;
+        }
+
+        return StripMipsApplier.Apply(pakPath, targets, game, engineVer);
     }
 
     private static object HandlePlanStripMips(JsonElement? args)

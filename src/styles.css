@@ -607,6 +607,14 @@ tr.dropping td { color: #1a1a1a; }
 }
 .mipstrip-apply-note p { margin: 0; }
 .mipstrip-apply-note ul { margin-top: 6px; padding-left: 8px; }
+.mipstrip-apply-note details { margin-top: 8px; }
+.mipstrip-apply-note summary { cursor: pointer; }
+
+/* Restore class pills in the planner table — colour-codes which textures
+ * become AI-restorable / backup-required / skipped per the classifier. */
+.restore-ai      { color: #1f6f3b; font-weight: 600; }
+.restore-backup  { color: #6f4d1f; font-weight: 600; }
+.restore-skip    { color: #6f1f1f; font-weight: 600; }
 .mipstrip-game {
   font-family: inherit;
   font-size: 0.9em;

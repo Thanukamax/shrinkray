@@ -7,8 +7,8 @@ use shrinkray_core::ai_restore::{plan_restore_ai, RestoreAiPlan};
 use shrinkray_core::classifier::{Policy, TextureFacts};
 use shrinkray_core::{analyze, backup, recompress, strip};
 use shrinkray_sidecar::{
-    ApplyStripMipsStub, InspectAssetResult, ListAssetsResult, PingResult, PlanStripMipsResult,
-    Sidecar,
+    ApplyStripMipsResult, InspectAssetResult, ListAssetsResult, PingResult, PlanStripMipsResult,
+    Sidecar, StripTarget,
 };
 
 /// Lazy-initialised sidecar handle. We spawn the .NET process on first use and
@@ -167,15 +167,20 @@ fn sidecar_plan_strip_mips(
     state.with(|s| s.plan_strip_mips(&pak_path, max_dim, limit, game.as_deref()))
 }
 
-/// v0.6 stub. Returns the structured "not implemented" payload so the UI can
-/// render an honest "what's next" state instead of erroring on a missing
-/// command. Real write-side lands in v0.6 once UAssetAPI is integrated.
+/// v0.6.0-rc1 apply path. Takes the pak + a list of per-texture (asset_path,
+/// max_dim) targets, plus optional game/engine version strings. The sidecar
+/// returns `ApplyStripMipsResult { applied, skipped, total_saved_bytes }` —
+/// targets that hit the in-flight UE4.22 per-mip parser path land in
+/// `skipped` with a diagnostic reason, so the UI can surface partial success.
 #[tauri::command]
 fn sidecar_apply_strip_mips(
     pak_path: String,
+    targets: Vec<StripTarget>,
+    game: Option<String>,
+    engine_version: Option<String>,
     state: tauri::State<SidecarHandle>,
-) -> Result<ApplyStripMipsStub, String> {
-    state.with(|s| s.apply_strip_mips(&pak_path))
+) -> Result<ApplyStripMipsResult, String> {
+    state.with(|s| s.apply_strip_mips(&pak_path, &targets, game.as_deref(), engine_version.as_deref()))
 }
 
 /// v0.7 scaffold: for the given pak + max_dim, produce a per-texture restore

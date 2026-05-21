@@ -138,13 +138,47 @@ pub struct ClassCount {
     pub count: i32,
 }
 
+/// v0.6 apply-side request — per-texture targets to strip.
+#[derive(Debug, Serialize, Deserialize, Clone)]
+pub struct StripTarget {
+    pub asset_path: String,
+    pub max_dim: i32,
+}
+
+/// One modified or original file payload returned by the applier. Bytes are
+/// base64-encoded so they fit cleanly in the JSON IPC line.
 #[derive(Debug, Deserialize, Serialize, Clone)]
-pub struct ApplyStripMipsStub {
-    pub implemented: bool,
-    pub phase: String,
-    pub message: String,
-    pub backup_required: bool,
-    pub requires: Vec<String>,
+pub struct StripAppliedFile {
+    pub pak_path: String,
+    pub bytes_base64: String,
+}
+
+#[derive(Debug, Deserialize, Serialize, Clone)]
+pub struct StripAppliedTexture {
+    pub asset_path: String,
+    pub export_name: String,
+    pub drop_mip_count: i32,
+    pub kept_mip_count: i32,
+    pub original_top_dim: i32,
+    pub kept_top_dim: i32,
+    pub saved_bytes: i64,
+    pub files: Vec<StripAppliedFile>,
+    pub original_files: Vec<StripAppliedFile>,
+}
+
+#[derive(Debug, Deserialize, Serialize, Clone)]
+pub struct StripSkipped {
+    pub asset_path: String,
+    pub reason: String,
+}
+
+#[derive(Debug, Deserialize, Serialize, Clone)]
+pub struct ApplyStripMipsResult {
+    pub pak_path: String,
+    pub engine_version: String,
+    pub applied: Vec<StripAppliedTexture>,
+    pub skipped: Vec<StripSkipped>,
+    pub total_saved_bytes: i64,
 }
 
 #[derive(Debug, Deserialize, Serialize, Clone)]
@@ -269,15 +303,35 @@ impl Sidecar {
         Ok(serde_json::from_value(result)?)
     }
 
-    /// v0.6 stub: returns a structured "not implemented" payload. Lets the
-    /// frontend wire the apply button up front so v0.6's binary write
-    /// integration is a swap-in, not a new IPC.
-    pub fn apply_strip_mips(&mut self, pak_path: impl AsRef<Path>) -> Result<ApplyStripMipsStub> {
+    /// v0.6 real apply path. For each target asset, the sidecar extracts the
+    /// triple from the pak via CUE4Parse, opens it via UAssetAPI, attempts the
+    /// byte-level mip-tail strip on Export.Extras, regenerates .ubulk, and
+    /// returns modified bytes (base64) alongside the original bytes for backup.
+    ///
+    /// rc1 caveat: targets that hit the in-flight per-mip parser path land in
+    /// `skipped` with a diagnostic reason. The framework is wired end-to-end
+    /// (extraction → UAssetAPI load → Extras parse → .ubulk regen → write
+    /// back); subsequent v0.6.x releases pin down the last few bytes of the
+    /// UE4.22 cooked layout to flip skipped → applied.
+    pub fn apply_strip_mips(
+        &mut self,
+        pak_path: impl AsRef<Path>,
+        targets: &[StripTarget],
+        game: Option<&str>,
+        engine_version: Option<&str>,
+    ) -> Result<ApplyStripMipsResult> {
         let mut args = serde_json::Map::new();
         args.insert(
             "pak_path".into(),
             Value::String(pak_path.as_ref().display().to_string()),
         );
+        args.insert("targets".into(), serde_json::to_value(targets)?);
+        if let Some(g) = game {
+            args.insert("game".into(), Value::String(g.into()));
+        }
+        if let Some(ev) = engine_version {
+            args.insert("engine_version".into(), Value::String(ev.into()));
+        }
         let result = self.call("apply_strip_mips", Some(Value::Object(args)))?;
         Ok(serde_json::from_value(result)?)
     }

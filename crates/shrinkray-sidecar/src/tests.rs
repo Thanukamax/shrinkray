@@ -121,18 +121,43 @@ fn plan_strip_mips_against_synthetic_pak() {
     let _: &[crate::ClassCount] = &r.class_histogram;
 }
 
-/// The v0.6 stub: apply_strip_mips returns structured "not implemented"
-/// so the frontend can render the v0.6 affordance without 404ing.
+/// v0.6.0-rc1: apply_strip_mips with empty targets returns a well-formed
+/// empty result. The full apply path against real cooked content is exercised
+/// in the manual Pamali pre-release pass (see CHANGELOG).
 #[test]
-fn apply_strip_mips_stub_returns_v06_marker() {
+fn apply_strip_mips_empty_targets_returns_empty_result() {
     let Some(mut s) = sidecar_or_skip() else { return };
     let tmp = tempfile::tempdir().unwrap();
     let pak_path = tmp.path().join("any.pak");
     make_pak(&pak_path, &[("Game/Content/A.uasset", b"x")]);
-    let r = s.apply_strip_mips(&pak_path).expect("apply_strip_mips ok");
-    assert!(!r.implemented);
-    assert_eq!(r.phase, "v0.6");
-    assert!(r.backup_required);
-    assert!(!r.requires.is_empty(), "v0.6 prerequisites listed");
-    assert!(r.message.to_lowercase().contains("uassetapi"));
+    let r = s
+        .apply_strip_mips(&pak_path, &[], Some("GAME_UE4_LATEST"), None)
+        .expect("apply_strip_mips ok");
+    assert_eq!(r.applied.len(), 0);
+    assert_eq!(r.skipped.len(), 0);
+    assert_eq!(r.total_saved_bytes, 0);
+}
+
+/// rc1: pointing the applier at a non-existent asset path inside a pak yields
+/// a structured skip rather than a hard error. Important for the UI — bad
+/// inputs surface as inline diagnostics, not invoke() rejections.
+#[test]
+fn apply_strip_mips_missing_asset_skipped_not_errored() {
+    let Some(mut s) = sidecar_or_skip() else { return };
+    let tmp = tempfile::tempdir().unwrap();
+    let pak_path = tmp.path().join("syn.pak");
+    make_pak(
+        &pak_path,
+        &[("Game/Content/Foo.uasset", b"fakebytes"), ("Game/Content/Foo.uexp", b"fake")],
+    );
+    let targets = vec![StripTarget {
+        asset_path: "Game/Content/DoesNotExist.uasset".into(),
+        max_dim: 1024,
+    }];
+    let r = s
+        .apply_strip_mips(&pak_path, &targets, Some("GAME_UE4_LATEST"), None)
+        .expect("apply_strip_mips ok");
+    assert_eq!(r.applied.len(), 0);
+    assert_eq!(r.skipped.len(), 1);
+    assert!(r.skipped[0].reason.contains("not found"));
 }
