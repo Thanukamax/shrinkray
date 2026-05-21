@@ -124,6 +124,12 @@ pub struct StripMipsItem {
     pub kept_mip_count: i32,
     pub save_bytes: i64,
     pub original_bytes: i64,
+    /// `TC_*` UPROPERTY when the cook serialized it. Drives the
+    /// `shrinkray_core::classifier` routing decision (normal-map exemption,
+    /// AI vs backup restore class). Many UE4 cooks omit this; downstream
+    /// uses name + pixel-format fallbacks.
+    #[serde(default)]
+    pub compression_settings: Option<String>,
 }
 
 #[derive(Debug, Deserialize, Serialize, Clone)]

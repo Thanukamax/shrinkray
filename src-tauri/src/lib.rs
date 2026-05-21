@@ -3,6 +3,8 @@ use std::path::PathBuf;
 use std::sync::Mutex;
 
 use shrinkray_audit::AuditReport;
+use shrinkray_core::ai_restore::{plan_restore_ai, RestoreAiPlan};
+use shrinkray_core::classifier::{Policy, TextureFacts};
 use shrinkray_core::{analyze, backup, recompress, strip};
 use shrinkray_sidecar::{
     ApplyStripMipsStub, InspectAssetResult, ListAssetsResult, PingResult, PlanStripMipsResult,
@@ -176,6 +178,66 @@ fn sidecar_apply_strip_mips(
     state.with(|s| s.apply_strip_mips(&pak_path))
 }
 
+/// v0.7 scaffold: for the given pak + max_dim, produce a per-texture restore
+/// routing plan (AI vs exact-backup vs skip). Internally calls plan_strip_mips
+/// to get the texture set, then runs each through `shrinkray_core::classifier`.
+///
+/// The plan's `executor_ready` field is always `false` in v0.7 scaffold — the
+/// ONNX inference path lands in v0.7 proper. The plan is still useful pre-v0.7
+/// because v0.6's strip path consults it to decide which textures get backed
+/// up vs skipped (normal-map exemption etc).
+#[tauri::command]
+fn sidecar_plan_restore_ai(
+    pak_path: String,
+    max_dim: i32,
+    limit: Option<i32>,
+    game: Option<String>,
+    policy: Option<String>,
+    state: tauri::State<SidecarHandle>,
+) -> Result<RestoreAiPlan, String> {
+    let resolved_policy = match policy.as_deref() {
+        Some("conservative") => Policy::Conservative,
+        Some("aggressive") => Policy::Aggressive,
+        Some("never_strip") | Some("never-strip") => Policy::NeverStrip,
+        _ => Policy::Smart,
+    };
+    let strip_plan = state.with(|s| s.plan_strip_mips(&pak_path, max_dim, limit, game.as_deref()))?;
+    let facts: Vec<TextureFacts> = strip_plan
+        .items
+        .iter()
+        .map(|item| TextureFacts {
+            class_name: item.class_name.clone(),
+            name: item.export_name.clone(),
+            compression_settings: item.compression_settings.clone(),
+            pixel_format: item.pixel_format.clone(),
+        })
+        .collect();
+    let mut plan = plan_restore_ai(&facts, resolved_policy);
+    // Patch asset_path onto each planned texture using the strip plan's
+    // matching by index — plan_restore_ai itself only sees the facts.
+    for (planned, item) in plan.textures.iter_mut().zip(strip_plan.items.iter()) {
+        planned.asset_path = item.asset_path.clone();
+    }
+    Ok(plan)
+}
+
+/// v0.7 scaffold: stub for the eventual AI-driven restore executor. Returns the
+/// plan with `executor_ready=false` and a note explaining v0.7's ONNX work is
+/// pending. Lets the frontend wire the "Restore (AI)" button now so v0.7
+/// becomes a swap-in, not a new IPC surface.
+#[tauri::command]
+fn sidecar_apply_restore_ai(
+    pak_path: String,
+    max_dim: i32,
+    policy: Option<String>,
+    state: tauri::State<SidecarHandle>,
+) -> Result<RestoreAiPlan, String> {
+    // Apply path is intentionally the same shape as plan path during scaffold —
+    // returns the plan so the UI can render "would have done X" without
+    // actually mutating anything yet.
+    sidecar_plan_restore_ai(pak_path, max_dim, None, None, policy, state)
+}
+
 /// v0.4.x: in-app Win7 Open dialog backing API. Lists one directory level
 /// without recursion. Errors map to a string so the front-end can show them.
 #[derive(serde::Serialize)]
@@ -314,6 +376,8 @@ pub fn run() {
             sidecar_inspect_asset,
             sidecar_plan_strip_mips,
             sidecar_apply_strip_mips,
+            sidecar_plan_restore_ai,
+            sidecar_apply_restore_ai,
             list_dir,
             quick_links,
             path_parent,

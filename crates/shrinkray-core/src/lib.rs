@@ -7,9 +7,11 @@
 //!
 //! Read-only auditing lives in the sibling `shrinkray-audit` crate.
 
+pub mod ai_restore;
 pub mod analyze;
 pub mod audio;
 pub mod backup;
+pub mod classifier;
 pub mod pak;
 pub mod recompress;
 pub mod strip;

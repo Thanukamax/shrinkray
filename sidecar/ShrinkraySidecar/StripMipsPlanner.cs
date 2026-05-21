@@ -23,7 +23,8 @@ public sealed record StripMipsItem(
     [property: JsonPropertyName("drop_mip_count")] int DropMipCount,
     [property: JsonPropertyName("kept_mip_count")] int KeptMipCount,
     [property: JsonPropertyName("save_bytes")] long SaveBytes,
-    [property: JsonPropertyName("original_bytes")] long OriginalBytes);
+    [property: JsonPropertyName("original_bytes")] long OriginalBytes,
+    [property: JsonPropertyName("compression_settings")] string? CompressionSettings);
 
 public sealed record ClassCount(
     [property: JsonPropertyName("class_name")] string ClassName,
@@ -235,6 +236,14 @@ public static class StripMipsPlannerImpl
         }
         if (sizeX <= 0 || sizeY <= 0 || numMips <= 0) return null;
 
+        // Pull CompressionSettings UPROPERTY when the cook serialized it.
+        // Many UE4 cooks drop this — the Rust-side classifier has a name +
+        // pixel-format fallback for that case, so we just surface whatever
+        // we find here and let downstream decide.
+        string? compressionSettings = null;
+        var csFn = obj.GetOrDefault<FName>("CompressionSettings").Text;
+        if (!string.IsNullOrEmpty(csFn) && csFn != "None") compressionSettings = csFn;
+
         long originalBytes = 0;
         var sizes = new long[numMips];
         for (int i = 0; i < numMips; i++)
@@ -268,7 +277,8 @@ public static class StripMipsPlannerImpl
             DropMipCount: firstKept,
             KeptMipCount: numMips - firstKept,
             SaveBytes: saveBytes,
-            OriginalBytes: originalBytes);
+            OriginalBytes: originalBytes,
+            CompressionSettings: compressionSettings);
     }
 
     /// <summary>Per-mip byte size in bytes for a given pixel format.</summary>
