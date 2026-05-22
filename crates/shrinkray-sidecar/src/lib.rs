@@ -196,6 +196,43 @@ pub struct StripSkipped {
     pub reason: String,
 }
 
+/// v0.7.3 — one mip level of new top-mip data to splice in. `bytes_base64`
+/// is BC-encoded by `shrinkray_core::bcn` upstream and handed to the sidecar
+/// as-is. Width/height drive the FTexturePlatformData SizeX/SizeY fields.
+#[derive(Debug, Serialize, Deserialize, Clone)]
+pub struct RestoreMipLevel {
+    pub w: i32,
+    pub h: i32,
+    pub bytes_base64: String,
+}
+
+#[derive(Debug, Serialize, Deserialize, Clone)]
+pub struct RestoreTarget {
+    pub asset_path: String,
+    pub new_top_mips: Vec<RestoreMipLevel>,
+}
+
+#[derive(Debug, Deserialize, Serialize, Clone)]
+pub struct RestoreAppliedTexture {
+    pub asset_path: String,
+    pub export_name: String,
+    pub inserted_mip_count: i32,
+    pub previous_top_dim: i32,
+    pub new_top_dim: i32,
+    pub inserted_bytes: i64,
+    pub files: Vec<StripAppliedFile>,
+    pub original_files: Vec<StripAppliedFile>,
+}
+
+#[derive(Debug, Deserialize, Serialize, Clone)]
+pub struct ApplyRestoreMipsResult {
+    pub pak_path: String,
+    pub engine_version: String,
+    pub applied: Vec<RestoreAppliedTexture>,
+    pub skipped: Vec<StripSkipped>,
+    pub total_inserted_bytes: i64,
+}
+
 #[derive(Debug, Deserialize, Serialize, Clone)]
 pub struct ApplyStripMipsResult {
     pub pak_path: String,
@@ -377,6 +414,56 @@ impl Sidecar {
         }
         let result = self.call_with_progress(
             "apply_strip_mips",
+            Some(Value::Object(args)),
+            on_progress,
+        )?;
+        Ok(serde_json::from_value(result)?)
+    }
+
+    /// v0.7.3 — reverse splice. For each target, inject a new top-mip chain
+    /// (BC-encoded bytes per level, base64-wrapped) into the existing
+    /// FTexturePlatformData, regenerating .ubulk and patching SizeX/SizeY/
+    /// NumMips. Returns the same StripAppliedFile shape so callers can run
+    /// the modified triple through `texture_strip::apply_to_pak` to write it
+    /// back into the pak.
+    ///
+    /// Per-texture progress is emitted on the same `strip-progress` channel
+    /// with `op = "apply_restore_mips"`.
+    pub fn apply_restore_mips(
+        &mut self,
+        pak_path: impl AsRef<Path>,
+        targets: &[RestoreTarget],
+        game: Option<&str>,
+        engine_version: Option<&str>,
+    ) -> Result<ApplyRestoreMipsResult> {
+        self.apply_restore_mips_with_progress(pak_path, targets, game, engine_version, |_| {})
+    }
+
+    pub fn apply_restore_mips_with_progress<F>(
+        &mut self,
+        pak_path: impl AsRef<Path>,
+        targets: &[RestoreTarget],
+        game: Option<&str>,
+        engine_version: Option<&str>,
+        on_progress: F,
+    ) -> Result<ApplyRestoreMipsResult>
+    where
+        F: FnMut(&Value),
+    {
+        let mut args = serde_json::Map::new();
+        args.insert(
+            "pak_path".into(),
+            Value::String(pak_path.as_ref().display().to_string()),
+        );
+        args.insert("targets".into(), serde_json::to_value(targets)?);
+        if let Some(g) = game {
+            args.insert("game".into(), Value::String(g.into()));
+        }
+        if let Some(ev) = engine_version {
+            args.insert("engine_version".into(), Value::String(ev.into()));
+        }
+        let result = self.call_with_progress(
+            "apply_restore_mips",
             Some(Value::Object(args)),
             on_progress,
         )?;

@@ -130,6 +130,7 @@ public static class Program
                 "inspect_asset" => HandleInspectAsset(req.Args),
                 "plan_strip_mips" => HandlePlanStripMips(req.Args),
                 "apply_strip_mips" => HandleApplyStripMips(req.Args),
+                "apply_restore_mips" => HandleApplyRestoreMips(req.Args),
                 "probe_texture_bytes" => HandleProbeTextureBytes(req.Args),
                 _ => throw new InvalidOperationException($"unknown command: {req.Cmd}"),
             };
@@ -254,6 +255,63 @@ public static class Program
         }
 
         return StripMipsApplier.Apply(pakPath, targets, game, engineVer);
+    }
+
+    /// <summary>
+    /// v0.7.3 reverse splice. Mirrors HandleApplyStripMips arg parsing but
+    /// the targets carry per-mip BC-encoded bytes (base64) instead of a
+    /// max_dim — the actual encoding work happens in Rust upstream.
+    /// </summary>
+    private static object HandleApplyRestoreMips(JsonElement? args)
+    {
+        if (args is null) throw new ArgumentException("apply_restore_mips requires args.pak_path + args.targets");
+        var pakPath = args.Value.TryGetProperty("pak_path", out var p)
+            ? p.GetString() ?? throw new ArgumentException("pak_path must be string")
+            : throw new ArgumentException("missing pak_path");
+        if (!args.Value.TryGetProperty("targets", out var t) || t.ValueKind != JsonValueKind.Array)
+            throw new ArgumentException("missing targets array");
+
+        var targets = new List<RestoreTarget>();
+        foreach (var item in t.EnumerateArray())
+        {
+            var assetPath = item.TryGetProperty("asset_path", out var ap)
+                ? ap.GetString() ?? throw new ArgumentException("target.asset_path must be string")
+                : throw new ArgumentException("missing target.asset_path");
+            if (!item.TryGetProperty("new_top_mips", out var ntm) || ntm.ValueKind != JsonValueKind.Array)
+                throw new ArgumentException($"missing new_top_mips on target {assetPath}");
+            var mips = new List<RestoreMipLevel>();
+            foreach (var mip in ntm.EnumerateArray())
+            {
+                int w = mip.TryGetProperty("w", out var wEl) && wEl.ValueKind == JsonValueKind.Number
+                    ? wEl.GetInt32()
+                    : throw new ArgumentException($"missing mip.w on {assetPath}");
+                int h = mip.TryGetProperty("h", out var hEl) && hEl.ValueKind == JsonValueKind.Number
+                    ? hEl.GetInt32()
+                    : throw new ArgumentException($"missing mip.h on {assetPath}");
+                var bytes = mip.TryGetProperty("bytes_base64", out var bEl) && bEl.ValueKind == JsonValueKind.String
+                    ? bEl.GetString() ?? throw new ArgumentException("mip.bytes_base64 must be string")
+                    : throw new ArgumentException($"missing mip.bytes_base64 on {assetPath}");
+                mips.Add(new RestoreMipLevel(w, h, bytes));
+            }
+            targets.Add(new RestoreTarget(assetPath, mips));
+        }
+
+        var game = CUE4Parse.UE4.Versions.EGame.GAME_UE5_LATEST;
+        if (args.Value.TryGetProperty("game", out var g) && g.ValueKind == JsonValueKind.String)
+        {
+            var name = g.GetString();
+            if (!string.IsNullOrEmpty(name) && Enum.TryParse<CUE4Parse.UE4.Versions.EGame>(name, true, out var parsed))
+                game = parsed;
+        }
+        var engineVer = UAssetAPI.UnrealTypes.EngineVersion.VER_UE4_AUTOMATIC_VERSION;
+        if (args.Value.TryGetProperty("engine_version", out var ev) && ev.ValueKind == JsonValueKind.String)
+        {
+            var name = ev.GetString();
+            if (!string.IsNullOrEmpty(name) && Enum.TryParse<UAssetAPI.UnrealTypes.EngineVersion>(name, true, out var parsed))
+                engineVer = parsed;
+        }
+
+        return RestoreMipsApplier.Apply(pakPath, targets, game, engineVer);
     }
 
     private static object HandlePlanStripMips(JsonElement? args)
