@@ -494,6 +494,153 @@ pub struct BackupStatus {
     pub entry_count: usize,
 }
 
+/// v0.7.4 — Δ-Codec savings projection over an existing backup manifest.
+///
+/// For each `TextureStripRecord` in the manifest, applies a class-derived
+/// bench ratio (from `docs/delta-codec-spec.md`) to the texture's full
+/// pre-strip mip-tail byte count. Sums to a projected sidecar size that
+/// would replace the current full-pak backup payload(s).
+///
+/// This is the projection-only path. Tonight's shadow-integration scope —
+/// the real per-texture measurement lands when the sidecar exposes the
+/// extracted top-mip byte range. The bench ratios are tight enough on
+/// content classes that the projection's accuracy is paper-defensible.
+#[derive(Debug, Serialize, Default)]
+pub struct DeltaCodecProjection {
+    pub current_backup_bytes: u64,
+    pub projected_delta_codec_bytes: u64,
+    pub savings_bytes: u64,
+    pub ratio: f64,
+    pub texture_count: u64,
+    pub class_breakdown: Vec<DeltaCodecClassBreakdown>,
+    /// Per-class bench-validated ratios used for the projection.
+    pub bench_ratios_used: Vec<(String, f64)>,
+}
+
+#[derive(Debug, Serialize)]
+pub struct DeltaCodecClassBreakdown {
+    pub compression_settings: String,
+    pub texture_count: u64,
+    pub baseline_bytes: u64,
+    pub projected_bytes: u64,
+    pub ratio: f64,
+}
+
+/// Per-class on-disk payload ratios measured in the Δ-Codec bench
+/// (`docs/delta-codec-spec.md`). Conservative — uses the BC-byte variant
+/// ratios where applicable so the projection doesn't oversell.
+pub fn delta_codec_class_ratio(compression_settings: Option<&str>) -> (f64, &'static str) {
+    let cs = compression_settings.unwrap_or("none").to_ascii_lowercase();
+    match cs.as_str() {
+        // TC_Normalmap / TC_Alpha / TC_VectorDisplacementmap → exact-backup
+        // class. BC-byte variant ratio (0.15 on textured input is the
+        // measured floor; we use 0.20 to leave headroom).
+        "tc_normalmap" | "tc_alpha" | "tc_vectordisplacementmap" | "tc_displacementmap"
+        | "tc_hdr" | "tc_hdrcompressed" | "tc_hdr_compressed" => (0.20, "bc-byte variant"),
+        // TC_LookupTable / TC_EditorIcon → NoStrip class. Δ-Codec doesn't
+        // touch these; ratio is 1.0 (no savings, no spend).
+        "tc_lookuptable" | "tc_editoricon" => (1.0, "no-strip"),
+        // TC_Grayscale / TC_Masks / TC_Roughness / TC_Metallic / TC_AO →
+        // single-channel data, low entropy after BC4 quantization. Pixel-
+        // space variant performs best on smooth-ish content. Bench saw
+        // 0.05× on pure smooth — we use 0.10 with headroom.
+        "tc_grayscale" | "tc_masks" | "tc_roughness" | "tc_metallic"
+        | "tc_ambientocclusion" | "tc_specular" => (0.10, "pixel variant, smooth-class"),
+        // TC_Default / TC_BaseColor / TC_Diffuse / unset → general
+        // colour-bearing textures. Bench textured-gradient ratio was 0.14;
+        // we use 0.20 to be conservative on real-game stochastic content.
+        _ => (0.20, "pixel variant, textured-class"),
+    }
+}
+
+/// Compute a Δ-Codec savings projection over an existing backup manifest.
+///
+/// Each strip's baseline is the full BC-byte size of the original top mip,
+/// computed from `original_top_dim` and `pixel_format`. For formats Δ-Codec
+/// currently supports (BC1/BC3/BC5/BC7) the baseline is the on-disk BC mip
+/// size; for unknown formats we conservatively assume 8 bpp (BC3-equivalent).
+pub fn project_delta_codec_savings(root: &Path) -> Option<DeltaCodecProjection> {
+    let root = root.canonicalize().ok()?;
+    let dir = backup_dir_for(&root);
+    let manifest_path = dir.join(MANIFEST_FILE);
+    if !manifest_path.exists() {
+        return None;
+    }
+    let raw = fs::read_to_string(&manifest_path).ok()?;
+    let m: Manifest = serde_json::from_str(&raw).ok()?;
+
+    let mut current = 0u64;
+    let mut projected = 0u64;
+    let mut count = 0u64;
+    let mut by_class: std::collections::BTreeMap<String, DeltaCodecClassBreakdown> =
+        std::collections::BTreeMap::new();
+    let mut ratios_used: std::collections::BTreeMap<String, f64> =
+        std::collections::BTreeMap::new();
+    for entry in &m.entries {
+        current += entry.original_size;
+        for strip in &entry.texture_strips {
+            count += 1;
+            let baseline = top_mip_baseline_bytes(strip);
+            let (ratio, _basis) = delta_codec_class_ratio(strip.compression_settings.as_deref());
+            let proj = ((baseline as f64) * ratio) as u64;
+            projected += proj;
+            let cs = strip
+                .compression_settings
+                .clone()
+                .unwrap_or_else(|| "none".to_string());
+            ratios_used.insert(cs.clone(), ratio);
+            let class_breakdown = by_class
+                .entry(cs.clone())
+                .or_insert_with(|| DeltaCodecClassBreakdown {
+                    compression_settings: cs,
+                    texture_count: 0,
+                    baseline_bytes: 0,
+                    projected_bytes: 0,
+                    ratio,
+                });
+            class_breakdown.texture_count += 1;
+            class_breakdown.baseline_bytes += baseline;
+            class_breakdown.projected_bytes += proj;
+        }
+    }
+    // Add back the non-texture-strip backup bytes verbatim — Δ-Codec only
+    // shrinks the texture-strip portion. L10N strip + recompression backups
+    // stay full-bytes (no per-texture decomposition).
+    let texture_baseline: u64 = by_class.values().map(|v| v.baseline_bytes).sum();
+    let non_texture = current.saturating_sub(texture_baseline);
+    projected += non_texture;
+    let savings = current.saturating_sub(projected);
+    let ratio = if current == 0 {
+        0.0
+    } else {
+        (projected as f64) / (current as f64)
+    };
+    Some(DeltaCodecProjection {
+        current_backup_bytes: current,
+        projected_delta_codec_bytes: projected,
+        savings_bytes: savings,
+        ratio,
+        texture_count: count,
+        class_breakdown: by_class.into_values().collect(),
+        bench_ratios_used: ratios_used.into_iter().collect(),
+    })
+}
+
+/// Approximate top-mip on-disk BC byte size from a strip record's stored
+/// dimensions + pixel format. Maps PF_* → bytes-per-block, falls back to
+/// 8 bpp (BC3-equivalent) for unknown formats so the projection stays
+/// conservative.
+fn top_mip_baseline_bytes(strip: &TextureStripRecord) -> u64 {
+    let blocks_x = ((strip.original_top_dim + 3) / 4) as u64;
+    let blocks_y = ((strip.original_top_dim + 3) / 4) as u64;
+    let bytes_per_block = match strip.pixel_format.as_str() {
+        "PF_DXT1" | "PF_BC1" => 8,
+        "PF_DXT5" | "PF_BC3" | "PF_BC5" | "PF_BC7" => 16,
+        _ => 16, // conservative default
+    };
+    blocks_x * blocks_y * bytes_per_block
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
