@@ -5,6 +5,7 @@ members = [
     "crates/shrinkray-audit",
     "crates/shrinkray-cli",
     "crates/shrinkray-sidecar",
+    "crates/shrinkray-delta-codec",
     "src-tauri",
 ]
 # external/repak is a vendored submodule with its own workspace — don't
@@ -48,6 +49,7 @@ image_dds = "0.7"
 shrinkray-core = { path = "crates/shrinkray-core" }
 shrinkray-audit = { path = "crates/shrinkray-audit" }
 shrinkray-sidecar = { path = "crates/shrinkray-sidecar" }
+shrinkray-delta-codec = { path = "crates/shrinkray-delta-codec" }
 
 # v0.6.2: redirect repak to a locally-patched fork (submodule at external/repak)
 # that bumps zlib/gzip from `Compression::fast()` (level 1) → `Compression::best()`

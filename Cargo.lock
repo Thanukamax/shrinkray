@@ -3433,6 +3433,18 @@ dependencies = [
 ]
 
 [[package]]
+name = "shrinkray-delta-codec"
+version = "0.7.4-alpha"
+dependencies = [
+ "anyhow",
+ "image",
+ "image_dds",
+ "serde",
+ "sha2",
+ "zstd",
+]
+
+[[package]]
 name = "shrinkray-sidecar"
 version = "0.7.3"
 dependencies = [
@@ -3452,10 +3464,12 @@ dependencies = [
  "anyhow",
  "base64 0.22.1",
  "dirs 5.0.1",
+ "image",
  "serde",
  "serde_json",
  "shrinkray-audit",
  "shrinkray-core",
+ "shrinkray-delta-codec",
  "shrinkray-sidecar",
  "tauri",
  "tauri-build",

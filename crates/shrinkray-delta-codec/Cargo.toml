@@ -1,0 +1,21 @@
+[package]
+name = "shrinkray-delta-codec"
+version = "0.7.4-alpha"
+edition.workspace = true
+license-file.workspace = true
+authors.workspace = true
+
+[dependencies]
+serde = { workspace = true }
+anyhow = { workspace = true }
+sha2 = { workspace = true }
+image_dds = { workspace = true }
+zstd = "0.13"
+
+[dev-dependencies]
+image = { workspace = true }
+zstd = "0.13"
+
+[[example]]
+name = "delta-codec-bench"
+path = "examples/delta_codec_bench.rs"
