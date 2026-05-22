@@ -79,6 +79,17 @@ fn restore_folder(path: String) -> Result<backup::RestoreReport, String> {
     b.restore().map_err(|e| e.to_string())
 }
 
+/// v0.7.4 — project what an existing backup would weigh if Δ-Codec had been
+/// used instead of full-bytes ExactBackup. Reads the existing manifest,
+/// applies bench-validated per-class ratios from `docs/delta-codec-spec.md`,
+/// and returns aggregate + per-class projections.
+///
+/// Returns None when no backup exists for the folder.
+#[tauri::command]
+fn delta_codec_project_backup(path: String) -> Option<backup::DeltaCodecProjection> {
+    backup::project_delta_codec_savings(&PathBuf::from(path))
+}
+
 /// Step 3: dry-run for L10N strip. Returns what would be deleted / rewritten.
 #[tauri::command]
 fn plan_strip(path: String, drop_languages: Vec<String>) -> Result<strip::StripPlan, String> {
@@ -554,6 +565,220 @@ fn path_parent(path: String) -> Option<String> {
         .map(|p| p.to_string_lossy().into_owned())
 }
 
+// ============================================================
+// v0.7.4 — Δ-Codec live demo Tauri commands.
+//
+// See `docs/delta-codec-spec.md` for the claim, bitstream, and measurement
+// protocol. The two commands below run the bench in-process so the UI can
+// surface real numbers (not pre-baked screenshots) during the demo. Output
+// rows match `shrinkray_delta_codec::bench` shape so the React side can
+// render without further translation.
+
+#[derive(serde::Serialize, Debug)]
+struct DeltaCodecBenchRow {
+    sample: String,
+    quant_step: u8,
+    top_mip_bytes: usize,
+    low_mip_bytes: usize,
+    residual_zst_bytes: usize,
+    delta_total_bytes: usize,
+    ratio: f64,
+    max_channel_error: u32,
+    byte_exact: bool,
+}
+
+#[derive(serde::Serialize, Debug)]
+struct DeltaCodecBenchResult {
+    rows: Vec<DeltaCodecBenchRow>,
+    best_lossless_ratio: f64,
+    lossless_runs: u32,
+    total_runs: u32,
+    spec_version: String,
+}
+
+fn run_bench_on_sample(
+    label: &str,
+    rgba: &[u8],
+    w: u32,
+    h: u32,
+) -> Result<Vec<DeltaCodecBenchRow>, String> {
+    use shrinkray_delta_codec::{
+        box_downsample_2x, decode_texture, encode_texture, BilinearPredictor,
+    };
+
+    let baseline = rgba.len();
+    let (low, lw, lh) = box_downsample_2x(rgba, w, h).map_err(|e| e.to_string())?;
+    let mut rows = Vec::with_capacity(3);
+    for q in [1u8, 2, 4] {
+        let mut predictor = BilinearPredictor;
+        let bs = encode_texture(
+            &mut predictor,
+            rgba,
+            w,
+            h,
+            low.clone(),
+            lw,
+            lh,
+            q,
+            q == 1,
+        )
+        .map_err(|e| e.to_string())?;
+        let size = bs.size();
+        let mut dec_pred = BilinearPredictor;
+        let restored = decode_texture(&mut dec_pred, &bs).map_err(|e| e.to_string())?;
+        let max_err = rgba
+            .iter()
+            .zip(restored.iter())
+            .map(|(a, b)| ((*a as i32) - (*b as i32)).unsigned_abs())
+            .max()
+            .unwrap_or(0);
+        let byte_exact = restored == rgba;
+        rows.push(DeltaCodecBenchRow {
+            sample: label.to_string(),
+            quant_step: q,
+            top_mip_bytes: baseline,
+            low_mip_bytes: size.low_mip_bytes,
+            residual_zst_bytes: size.residual_zst_bytes,
+            delta_total_bytes: size.total_bytes,
+            ratio: size.total_bytes as f64 / baseline as f64,
+            max_channel_error: max_err,
+            byte_exact,
+        });
+    }
+    Ok(rows)
+}
+
+fn finalize_bench(mut rows: Vec<DeltaCodecBenchRow>) -> DeltaCodecBenchResult {
+    rows.sort_by_key(|r| (r.sample.clone(), r.quant_step));
+    let mut best_ratio = f64::INFINITY;
+    let mut lossless_runs = 0u32;
+    let total_runs = rows.len() as u32;
+    for r in &rows {
+        if r.quant_step == 1 && r.byte_exact {
+            lossless_runs += 1;
+        }
+        if r.ratio < best_ratio {
+            best_ratio = r.ratio;
+        }
+    }
+    DeltaCodecBenchResult {
+        rows,
+        best_lossless_ratio: best_ratio,
+        lossless_runs,
+        total_runs,
+        spec_version: "delta-codec-v1".to_string(),
+    }
+}
+
+/// v0.7.4 — run Δ-Codec against three deterministic synthetic content
+/// classes (smooth gradient, textured gradient, high-frequency noise) at
+/// 256×256. Fast (<1s), reproducible, no model needed. The UI calls this
+/// first so a fresh user sees real numbers immediately.
+#[tauri::command]
+fn delta_codec_run_synthetic_bench() -> Result<DeltaCodecBenchResult, String> {
+    let dim = 256u32;
+    let mut all = Vec::new();
+    all.extend(run_bench_on_sample(
+        "smooth_gradient",
+        &synth_smooth(dim, dim),
+        dim,
+        dim,
+    )?);
+    all.extend(run_bench_on_sample(
+        "textured_gradient",
+        &synth_textured(dim, dim),
+        dim,
+        dim,
+    )?);
+    all.extend(run_bench_on_sample(
+        "high_freq_noise",
+        &synth_noise(dim, dim),
+        dim,
+        dim,
+    )?);
+    Ok(finalize_bench(all))
+}
+
+/// v0.7.4 — Δ-Codec against a user-supplied image file (PNG/JPG). Resizes
+/// the image to a 1024×1024 max so the bench stays interactive. This is the
+/// "pick any image, watch it become byte-exactly compressed" demo move.
+#[tauri::command]
+fn delta_codec_run_file_bench(path: String) -> Result<DeltaCodecBenchResult, String> {
+    let img = image::open(&path).map_err(|e| format!("open {path}: {e}"))?;
+    let rgba = img.to_rgba8();
+    let (w, h) = rgba.dimensions();
+    let max_dim = 1024u32;
+    let (final_w, final_h, bytes) = if w > max_dim || h > max_dim {
+        let scale = (max_dim as f32 / w.max(h) as f32).min(1.0);
+        let nw = (w as f32 * scale).round() as u32;
+        let nh = (h as f32 * scale).round() as u32;
+        let resized = image::imageops::resize(
+            &rgba,
+            nw,
+            nh,
+            image::imageops::FilterType::Lanczos3,
+        );
+        (nw, nh, resized.into_raw())
+    } else {
+        (w, h, rgba.into_raw())
+    };
+    let label = std::path::Path::new(&path)
+        .file_name()
+        .map(|n| n.to_string_lossy().into_owned())
+        .unwrap_or_else(|| "<unnamed>".to_string());
+    let rows = run_bench_on_sample(&label, &bytes, final_w, final_h)?;
+    Ok(finalize_bench(rows))
+}
+
+fn synth_smooth(w: u32, h: u32) -> Vec<u8> {
+    let mut out = Vec::with_capacity((w * h * 4) as usize);
+    for y in 0..h {
+        for x in 0..w {
+            let cx = w as f32 / 2.0;
+            let cy = h as f32 / 2.0;
+            let dx = x as f32 - cx;
+            let dy = y as f32 - cy;
+            let d = (dx * dx + dy * dy).sqrt();
+            let intensity = (255.0 - d).clamp(0.0, 255.0) as u8;
+            out.push(intensity);
+            out.push((intensity / 2 + 64) as u8);
+            out.push((255 - intensity) as u8);
+            out.push(255);
+        }
+    }
+    out
+}
+
+fn synth_textured(w: u32, h: u32) -> Vec<u8> {
+    let mut out = Vec::with_capacity((w * h * 4) as usize);
+    for y in 0..h {
+        for x in 0..w {
+            let g = ((x as u32 * 256 / w) & 0xff) as u8;
+            let bump = (((x ^ y) & 0x0f) as u8) * 4;
+            out.push(g.saturating_add(bump));
+            out.push(g.saturating_sub(bump / 2));
+            out.push(128u8.saturating_add(bump));
+            out.push(255);
+        }
+    }
+    out
+}
+
+fn synth_noise(w: u32, h: u32) -> Vec<u8> {
+    let mut rng: u64 = 0x9e37_79b9_7f4a_7c15;
+    let mut out = Vec::with_capacity((w * h * 4) as usize);
+    for _ in 0..(w * h) {
+        rng ^= rng << 13;
+        rng ^= rng >> 7;
+        rng ^= rng << 17;
+        out.push((rng & 0xff) as u8);
+        out.push(((rng >> 8) & 0xff) as u8);
+        out.push(((rng >> 16) & 0xff) as u8);
+        out.push(255);
+    }
+    out
+}
+
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
     tauri::Builder::default()
@@ -582,6 +807,9 @@ pub fn run() {
             list_dir,
             quick_links,
             path_parent,
+            delta_codec_run_synthetic_bench,
+            delta_codec_run_file_bench,
+            delta_codec_project_backup,
         ])
         .run(tauri::generate_context!())
         .expect("error while running tauri application");

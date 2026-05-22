@@ -27,6 +27,10 @@ tauri-plugin-dialog = "2"
 shrinkray-core = { workspace = true, features = ["inference"] }
 shrinkray-audit.workspace = true
 shrinkray-sidecar.workspace = true
+# v0.7.4: Δ-Codec — combined AI-fast / byte-exact texture compression.
+# See docs/delta-codec-spec.md for the falsifiable claim + bench results.
+shrinkray-delta-codec.workspace = true
+image.workspace = true
 serde.workspace = true
 serde_json.workspace = true
 anyhow.workspace = true

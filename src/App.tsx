@@ -2,6 +2,7 @@ import { useEffect, useMemo, useState } from 'react'
 import { invoke } from '@tauri-apps/api/core'
 import { AssetInspector } from './AssetInspector'
 import { MipStripPanel } from './MipStripPanel'
+import { DeltaCodecPanel } from './DeltaCodecPanel'
 import { TitleBar } from './TitleBar'
 import { OpenDialog } from './OpenDialog'
 
@@ -75,6 +76,24 @@ type BackupStatus = {
   shrinkray_version: string
   mode: 'differential' | 'full'
   entry_count: number
+}
+
+type DeltaCodecClassBreakdown = {
+  compression_settings: string
+  texture_count: number
+  baseline_bytes: number
+  projected_bytes: number
+  ratio: number
+}
+
+type DeltaCodecProjection = {
+  current_backup_bytes: number
+  projected_delta_codec_bytes: number
+  savings_bytes: number
+  ratio: number
+  texture_count: number
+  class_breakdown: DeltaCodecClassBreakdown[]
+  bench_ratios_used: [string, number][]
 }
 
 type RestoreReport = {
@@ -228,6 +247,8 @@ export default function App() {
   const [report, setReport] = useState<AnalysisReport | null>(null)
   const [backup, setBackup] = useState<BackupStatus | null>(null)
   const [restore, setRestore] = useState<RestoreReport | null>(null)
+  const [deltaCodecProjection, setDeltaCodecProjection] =
+    useState<DeltaCodecProjection | null>(null)
   const [dropLangs, setDropLangs] = useState<Set<string>>(new Set())
   const [plan, setPlan] = useState<StripPlan | null>(null)
   const [stripReport, setStripReport] = useState<StripReport | null>(null)
@@ -248,6 +269,31 @@ export default function App() {
   useEffect(() => {
     persistPreviewOnly(previewOnly)
   }, [previewOnly])
+
+  // Re-fetch the Δ-Codec projection whenever the backup state changes —
+  // covers folder load, ensure_backup, post-strip, post-restore.
+  useEffect(() => {
+    let cancelled = false
+    async function pull() {
+      if (!path || !backup || backup.entry_count === 0) {
+        setDeltaCodecProjection(null)
+        return
+      }
+      try {
+        const proj = await invoke<DeltaCodecProjection | null>(
+          'delta_codec_project_backup',
+          { path },
+        )
+        if (!cancelled) setDeltaCodecProjection(proj)
+      } catch {
+        if (!cancelled) setDeltaCodecProjection(null)
+      }
+    }
+    pull()
+    return () => {
+      cancelled = true
+    }
+  }, [path, backup])
 
   const [folderDialogOpen, setFolderDialogOpen] = useState(false)
 
@@ -530,6 +576,8 @@ export default function App() {
 
       <MipStripPanel folderPath={path} backupLoaded={!!backup} previewOnly={previewOnly} />
 
+      <DeltaCodecPanel />
+
       {backup && (
         <section className="report backup-card">
           <h2>Backup</h2>
@@ -542,6 +590,80 @@ export default function App() {
               <Row label="backup dir" value={backup.backup_dir} />
             </tbody>
           </table>
+
+          {deltaCodecProjection && deltaCodecProjection.texture_count > 0 && (
+            <div
+              style={{
+                marginTop: '0.9rem',
+                padding: '0.7rem 0.9rem',
+                background: 'rgba(64, 200, 140, 0.08)',
+                border: '1px solid rgba(120, 220, 160, 0.3)',
+                borderRadius: '4px',
+              }}
+            >
+              <p style={{ margin: 0, fontWeight: 600, color: '#9efc8c' }}>
+                Δ-Codec projection
+              </p>
+              <p className="muted small" style={{ marginTop: '0.3rem' }}>
+                Same backup, encoded via Δ-Codec sidecar instead of full bytes. Bench-validated
+                per-class ratios (see <code>docs/delta-codec-spec.md</code>).
+              </p>
+              <table style={{ marginTop: '0.5rem' }}>
+                <tbody>
+                  <Row
+                    label="current backup"
+                    value={formatBytes(deltaCodecProjection.current_backup_bytes)}
+                  />
+                  <Row
+                    label="with Δ-Codec"
+                    value={formatBytes(deltaCodecProjection.projected_delta_codec_bytes)}
+                  />
+                  <Row
+                    label="savings"
+                    value={`${formatBytes(deltaCodecProjection.savings_bytes)} (${((1 - deltaCodecProjection.ratio) * 100).toFixed(1)}% smaller)`}
+                  />
+                  <Row
+                    label="textures covered"
+                    value={deltaCodecProjection.texture_count.toLocaleString()}
+                  />
+                </tbody>
+              </table>
+              {deltaCodecProjection.class_breakdown.length > 0 && (
+                <details style={{ marginTop: '0.5rem' }}>
+                  <summary className="muted small">per-class breakdown</summary>
+                  <table style={{ marginTop: '0.4rem' }}>
+                    <thead>
+                      <tr>
+                        <th style={{ textAlign: 'left' }}>compression</th>
+                        <th style={{ textAlign: 'right' }}>count</th>
+                        <th style={{ textAlign: 'right' }}>baseline</th>
+                        <th style={{ textAlign: 'right' }}>Δ-projected</th>
+                        <th style={{ textAlign: 'right' }}>ratio</th>
+                      </tr>
+                    </thead>
+                    <tbody>
+                      {deltaCodecProjection.class_breakdown.map((c) => (
+                        <tr key={c.compression_settings}>
+                          <td>{c.compression_settings}</td>
+                          <td style={{ textAlign: 'right' }}>{c.texture_count}</td>
+                          <td style={{ textAlign: 'right' }}>{formatBytes(c.baseline_bytes)}</td>
+                          <td style={{ textAlign: 'right' }}>{formatBytes(c.projected_bytes)}</td>
+                          <td
+                            style={{
+                              textAlign: 'right',
+                              color: c.ratio < 1.0 ? '#9efc8c' : '#ffb14e',
+                            }}
+                          >
+                            {c.ratio.toFixed(2)}×
+                          </td>
+                        </tr>
+                      ))}
+                    </tbody>
+                  </table>
+                </details>
+              )}
+            </div>
+          )}
           <div className="actions" style={{ marginTop: '0.9rem' }}>
             <button onClick={restoreFolder} disabled={restoring || backup.entry_count === 0}>
               {restoring ? 'restoring…' : 'restore from backup'}
