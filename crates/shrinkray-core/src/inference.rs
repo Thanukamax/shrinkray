@@ -244,6 +244,61 @@ mod tests {
         eprintln!("smoke probe: inputs={:?} outputs={:?}", probe.inputs, probe.outputs);
     }
 
+    /// End-to-end Rust composition smoke: BC3-encode a gradient, decode it
+    /// back to RGBA, upscale 4× via AI, BC3-encode the result with a full
+    /// mip chain, then decode the top of the result. Proves bcn::* and
+    /// inference::* compose correctly before v0.7.2 wires the .NET-side
+    /// splice through the manifest restore loop.
+    #[test]
+    fn bcn_inference_bcn_round_trip_composition() {
+        let Some(model) = model_or_skip() else { return };
+
+        // 1. Start from a synthetic 64×64 RGBA gradient.
+        let (w, h) = (64u32, 64u32);
+        let mut rgba_in = Vec::with_capacity((w * h * 4) as usize);
+        for y in 0..h {
+            for x in 0..w {
+                rgba_in.push((x * 4) as u8);
+                rgba_in.push((y * 4) as u8);
+                rgba_in.push(128);
+                rgba_in.push(255);
+            }
+        }
+
+        // 2. BC3-encode (lossy) + decode back.
+        let bc = crate::bcn::encode_with_mips(crate::bcn::BcFormat::Bc3, w, h, &rgba_in)
+            .expect("bc3 encode");
+        assert_eq!(bc[0].width, w);
+        assert_eq!(bc[0].height, h);
+        let rgba_decoded = crate::bcn::decode_to_rgba8(crate::bcn::BcFormat::Bc3, w, h, &bc[0].bytes)
+            .expect("bc3 decode");
+        assert_eq!(rgba_decoded.len(), rgba_in.len());
+
+        // 3. Run inference: 64×64 → 256×256.
+        let (upscaled, ow, oh) = upscale_4x_rgba(&model, &rgba_decoded, w, h)
+            .expect("inference 4x");
+        assert_eq!((ow, oh), (256, 256));
+
+        // 4. BC3-encode the upscaled output with a full mip chain.
+        let restored = crate::bcn::encode_with_mips(crate::bcn::BcFormat::Bc3, ow, oh, &upscaled)
+            .expect("bc3 re-encode");
+        // Top mip dims survived through the full pipeline.
+        assert_eq!(restored[0].width, ow);
+        assert_eq!(restored[0].height, oh);
+        // Mip chain goes 256 → 128 → 64 → 32 → 16 → 8 → 4 → 2 → 1 = 9 levels.
+        assert_eq!(restored.len(), 9);
+
+        // 5. Decode the top of the restored chain back to RGBA.
+        let final_rgba = crate::bcn::decode_to_rgba8(
+            crate::bcn::BcFormat::Bc3, ow, oh, &restored[0].bytes,
+        ).expect("final decode");
+        assert_eq!(final_rgba.len(), (ow * oh * 4) as usize);
+        // We don't assert pixel-level identity — BC3 is lossy twice + AI
+        // upscale introduces its own drift. The load-bearing property is
+        // "the Rust pipeline composes end-to-end without dim mismatches or
+        // length errors."
+    }
+
     #[test]
     fn upscales_synthetic_gradient_4x() {
         let Some(model) = model_or_skip() else { return };

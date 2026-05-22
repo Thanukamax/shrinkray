@@ -14,7 +14,7 @@ members = [
 exclude = ["external/repak"]
 
 [workspace.package]
-version = "0.7.0"
+version = "0.7.1"
 edition = "2021"
 rust-version = "1.77"
 license-file = "LICENSE"
@@ -39,6 +39,11 @@ repak = { git = "https://github.com/trumank/repak", rev = "e215472c51db69328b1ce
 ort = { version = "=2.0.0-rc.10", default-features = false, features = ["std", "download-binaries", "ndarray"] }
 ndarray = "0.16"
 image = { version = "0.25", default-features = false, features = ["png", "jpeg"] }
+# v0.7.1: BCn en/decode for the AI restore round-trip (.ubulk mip ↔ RGBA).
+# image_dds handles both directions; intel_tex_2 is the ISPC-accelerated
+# encoder for BC1/3/5/7 — we use image_dds for the v0.7.1 cut and add
+# intel_tex_2 later once we have a perf complaint.
+image_dds = "0.7"
 
 shrinkray-core = { path = "crates/shrinkray-core" }
 shrinkray-audit = { path = "crates/shrinkray-audit" }

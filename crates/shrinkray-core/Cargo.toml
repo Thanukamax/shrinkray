@@ -21,12 +21,13 @@ repak.workspace = true
 ort = { workspace = true, optional = true }
 ndarray = { workspace = true, optional = true }
 image = { workspace = true, optional = true }
+image_dds = { workspace = true, optional = true }
 
 [features]
 default = []
 # AI re-expand path. Adds ~200 MB to the build artifact via ORT's prebuilt
 # libs. Off by default so the lean audit/strip-only workflow stays fast.
-inference = ["dep:ort", "dep:ndarray", "dep:image"]
+inference = ["dep:ort", "dep:ndarray", "dep:image", "dep:image_dds"]
 
 [dev-dependencies]
 tempfile.workspace = true
