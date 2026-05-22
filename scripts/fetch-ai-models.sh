@@ -29,10 +29,17 @@ DEST_DIR="${REPO_ROOT}/src-tauri/binaries/ai-models"
 mkdir -p "${DEST_DIR}"
 
 # Format: name|url|sha256
-# SHA256 of zeros = "scaffold placeholder, replace before v0.7 release".
+#
+# v0.7.0 ships a smoke model (ONNX zoo's sub-pixel CNN super-resolution, 3×,
+# 240 KB) for pipeline validation. Real-ESRGAN x4 production models are
+# 17-65 MB and the upstream hosting situation is volatile (HF gating,
+# release renaming, etc.); for v0.7.1 we'll move the production models to a
+# shrinkray-hosted mirror so installs aren't dependent on third-party uptime.
+#
+# Until then, point SHRINKRAY_AI_MODEL at a local Real-ESRGAN ONNX you've
+# downloaded yourself, or run inference with the smoke model for testing.
 MODELS=(
-  "realesrgan-x4-general.onnx|https://example.invalid/realesrgan-x4-general.onnx|0000000000000000000000000000000000000000000000000000000000000000"
-  "realesrgan-general-x4-v3.onnx|https://example.invalid/realesrgan-general-x4-v3.onnx|0000000000000000000000000000000000000000000000000000000000000000"
+  "super-resolution-10.onnx|https://github.com/onnx/models/raw/main/validated/vision/super_resolution/sub_pixel_cnn_2016/model/super-resolution-10.onnx|"
 )
 
 MODE="${1:-all}"
@@ -44,12 +51,32 @@ fetch() {
     echo "[fetch-ai-models] ${name} already present, skipping"
     return 0
   fi
-  echo "[fetch-ai-models] scaffold placeholder for ${name}"
-  echo "[fetch-ai-models]   real URL/checksum land with v0.7 release"
-  echo "[fetch-ai-models]   would have fetched: ${url}"
-  echo "[fetch-ai-models]   expected sha256:   ${expected}"
-  # Write a sentinel so downstream code can detect scaffold-stage state.
-  printf 'scaffold-placeholder\nname=%s\nurl=%s\n' "${name}" "${url}" > "${dest}.placeholder"
+  echo "[fetch-ai-models] downloading ${name}"
+  echo "[fetch-ai-models]   from: ${url}"
+  if ! curl -sL --max-time 120 --fail -o "${dest}" "${url}"; then
+    echo "[fetch-ai-models] download FAILED for ${name}" >&2
+    rm -f "${dest}"
+    return 1
+  fi
+  # Verify checksum when one is configured. Empty checksum = "no anchor yet,
+  # caller's risk" (v0.7.0 ships the smoke model without one because the
+  # upstream onnx/models repo bumps occasionally).
+  if [[ -n "${expected}" ]]; then
+    local got
+    got=$(sha256sum "${dest}" | awk '{print $1}')
+    if [[ "${got}" != "${expected}" ]]; then
+      echo "[fetch-ai-models] checksum mismatch for ${name}" >&2
+      echo "  expected: ${expected}" >&2
+      echo "  got:      ${got}" >&2
+      rm -f "${dest}"
+      return 1
+    fi
+    echo "[fetch-ai-models]   sha256 ok: ${got}"
+  else
+    local got
+    got=$(sha256sum "${dest}" | awk '{print $1}')
+    echo "[fetch-ai-models]   sha256: ${got} (no anchor — pin once stable)"
+  fi
 }
 
 check_only() {

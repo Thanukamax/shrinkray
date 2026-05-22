@@ -8,6 +8,7 @@ use shrinkray_audit::AuditReport;
 use shrinkray_core::ai_restore::{plan_restore_ai, RestoreAiPlan};
 use shrinkray_core::classifier::{Policy, TextureFacts};
 use shrinkray_core::texture_strip::{self, AppliedTexture, PakStripReport, SkippedTexture};
+use shrinkray_core::inference;
 use shrinkray_core::{analyze, backup, recompress, strip};
 use shrinkray_sidecar::{
     ApplyStripMipsResult, InspectAssetResult, ListAssetsResult, PingResult, PlanStripMipsResult,
@@ -330,6 +331,41 @@ fn sidecar_apply_restore_ai(
     sidecar_plan_restore_ai(pak_path, max_dim, None, None, policy, state)
 }
 
+/// v0.7.0: probe an ONNX model file to confirm it loads + report its
+/// input/output shapes. The UI uses this for two things: (1) validate that
+/// a user-picked model file is loadable by ORT before kicking off any
+/// long-running restore op, and (2) surface input/output dims so the
+/// classifier-routed restore in v0.7.1 can refuse mismatched models early.
+#[tauri::command]
+fn probe_ai_model(model_path: String) -> Result<ProbeAiModelReport, String> {
+    let probe = inference::probe_model(std::path::Path::new(&model_path))
+        .map_err(|e| e.to_string())?;
+    Ok(ProbeAiModelReport {
+        inputs: probe
+            .inputs
+            .into_iter()
+            .map(|s| ProbeIo { name: s.name, shape: s.shape })
+            .collect(),
+        outputs: probe
+            .outputs
+            .into_iter()
+            .map(|s| ProbeIo { name: s.name, shape: s.shape })
+            .collect(),
+    })
+}
+
+#[derive(serde::Serialize)]
+struct ProbeAiModelReport {
+    inputs: Vec<ProbeIo>,
+    outputs: Vec<ProbeIo>,
+}
+
+#[derive(serde::Serialize)]
+struct ProbeIo {
+    name: String,
+    shape: String,
+}
+
 /// v0.4.x: in-app Win7 Open dialog backing API. Lists one directory level
 /// without recursion. Errors map to a string so the front-end can show them.
 #[derive(serde::Serialize)]
@@ -471,6 +507,7 @@ pub fn run() {
             apply_strip_mips_to_folder,
             sidecar_plan_restore_ai,
             sidecar_apply_restore_ai,
+            probe_ai_model,
             list_dir,
             quick_links,
             path_parent,

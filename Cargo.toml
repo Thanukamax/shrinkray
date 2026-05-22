@@ -14,7 +14,7 @@ members = [
 exclude = ["external/repak"]
 
 [workspace.package]
-version = "0.6.2"
+version = "0.7.0"
 edition = "2021"
 rust-version = "1.77"
 license-file = "LICENSE"
@@ -32,6 +32,13 @@ clap = { version = "4", features = ["derive"] }
 # UE pak read — pinned to git v0.2.3, crates.io is stuck at 0.1.0.
 # See research/A_pak_iostore.md for why we need 0.2.x.
 repak = { git = "https://github.com/trumank/repak", rev = "e215472c51db69328b1ce77be2db24d24c1d646b" }
+# v0.7.0: ONNX Runtime bindings for the AI re-expand path. `download-binaries`
+# pulls a prebuilt ORT shared lib at build time so users don't need a system
+# install. Pin to a 2.x release once one of the rc/beta tags settles — for
+# now we track latest stable on crates.io.
+ort = { version = "=2.0.0-rc.10", default-features = false, features = ["std", "download-binaries", "ndarray"] }
+ndarray = "0.16"
+image = { version = "0.25", default-features = false, features = ["png", "jpeg"] }
 
 shrinkray-core = { path = "crates/shrinkray-core" }
 shrinkray-audit = { path = "crates/shrinkray-audit" }

@@ -21,7 +21,10 @@ tauri-build = { version = "2", features = [] }
 [dependencies]
 tauri = { version = "2", features = ["devtools"] }
 tauri-plugin-dialog = "2"
-shrinkray-core.workspace = true
+# v0.7.0: pull in shrinkray-core's `inference` feature so the AI-restore
+# Tauri command can probe ONNX models. ORT adds ~200 MB to the build but
+# it's only loaded when the user actually clicks "Restore (AI)".
+shrinkray-core = { workspace = true, features = ["inference"] }
 shrinkray-audit.workspace = true
 shrinkray-sidecar.workspace = true
 serde.workspace = true

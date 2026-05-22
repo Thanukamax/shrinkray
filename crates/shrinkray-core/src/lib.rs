@@ -12,6 +12,8 @@ pub mod analyze;
 pub mod audio;
 pub mod backup;
 pub mod classifier;
+#[cfg(feature = "inference")]
+pub mod inference;
 pub mod pak;
 pub mod recompress;
 pub mod strip;

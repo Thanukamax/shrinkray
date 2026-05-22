@@ -15,6 +15,18 @@ anyhow.workspace = true
 thiserror.workspace = true
 sha2.workspace = true
 repak.workspace = true
+# v0.7.0: ORT + ndarray drive the inference module. Both behind a `inference`
+# feature so the core crate builds without them on slim configs (CI of the
+# audit/strip subsystem doesn't need a 200 MB ORT binary).
+ort = { workspace = true, optional = true }
+ndarray = { workspace = true, optional = true }
+image = { workspace = true, optional = true }
+
+[features]
+default = []
+# AI re-expand path. Adds ~200 MB to the build artifact via ORT's prebuilt
+# libs. Off by default so the lean audit/strip-only workflow stays fast.
+inference = ["dep:ort", "dep:ndarray", "dep:image"]
 
 [dev-dependencies]
 tempfile.workspace = true
