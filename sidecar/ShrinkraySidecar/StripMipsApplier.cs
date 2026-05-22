@@ -256,16 +256,11 @@ public static class StripMipsApplier
         if (firstKept >= parsed.Mips.Count)
             return (null, new StripSkipped(target.AssetPath, "no mip small enough for target dim"));
 
-        // v0.6 limitation: if any kept mip uses inline payload, defer.
-        // Cooked games usually put payload in .ubulk, so this is the typical path,
-        // but defensive skip keeps v0.6 safe.
-        for (int i = firstKept; i < parsed.Mips.Count; i++)
-        {
-            if (parsed.Mips[i].IsInlinePayload)
-            {
-                return (null, new StripSkipped(target.AssetPath, $"inline-payload mip #{i} not yet supported"));
-            }
-        }
+        // Inline-payload mips are now supported: the splice preserves their
+        // byte-exact payload in-band, and their OffsetInFile is informational
+        // (CUE4Parse's GetBulkArchive doesn't use it for inline reads).
+        // We only ever DROP top mips (which are ubulk-stored — large enough to
+        // not be inlined), so the inline-payload tail rides through untouched.
 
         // Compute savings (bytes saved = sum of dropped mips' SizeOnDisk).
         long savedBytes = 0;
@@ -400,26 +395,35 @@ public static class StripMipsApplier
             int numMips = ReadI32(extras, ref off, out error); if (error != "") return false;
             if (numMips < 1 || numMips > 16) { error = $"NumMips out of range: {numMips}"; return false; }
 
+            // One-time `bCooked` sentinel between NumMips and the mip array.
+            // Empirically observed on Pamali (UE4.22): a single int32 (value 1)
+            // is emitted ONCE, not per-mip. CUE4Parse master reads it per-mip
+            // and throws on mip 1+ where the 4-byte slot is actually the next
+            // mip's BulkDataFlags (0x0501 for ubulk-stored mips, 0x48 for
+            // inline mips) — neither of which is a valid bool. We preserve
+            // this byte on write-back so the cook stays bit-identical for
+            // the non-stripped mips.
+            int cookedSentinelOffset = off;
+            int cookedSentinel = ReadI32(extras, ref off, out error); if (error != "") return false;
+
             var mips = new List<ParsedMip>(numMips);
             int mipsArrayStart = off;
             for (int i = 0; i < numMips; i++)
             {
                 int mipEntryStart = off;
-                // Per FTexture2DMipMap(FAssetArchive) in CUE4Parse:
-                //   1. `bool cooked` serialized as int32 (4 bytes) — for
-                //      UE4.13..UE4.x cooks where TEXTURE_SOURCE_ART_REFACTOR
-                //      is set and Game < UE5_0.
-                //   2. FByteBulkDataHeader: int32 flags + int32 elementCount
+                // Per-mip layout (32 bytes + optional inline payload):
+                //   1. FByteBulkDataHeader: int32 flags + int32 elementCount
                 //      + uint32 sizeOnDisk + int64 offsetInFile = 20 bytes
-                //      (assumes BULKDATA_Size64Bit unset, which is the common case).
-                //   3. int32 SizeX, SizeY (always), int32 SizeZ for Game >= UE4_20.
+                //      (BULKDATA_Size64Bit assumed unset, which is the common case).
+                //   2. If BULKDATA_ForceInlinePayload is set, SizeOnDisk bytes
+                //      of inline payload follow directly (small mips go in-band
+                //      in the .uexp, not in .ubulk).
+                //   3. int32 SizeX, SizeY, SizeZ (always for UE4.20+).
                 //
-                // For UE5 cooks the leading `cooked` int32 is absent. We
-                // accept that as a future-codepath; for now `cookedHeader` is
-                // always present for UE4 (Pamali, our v0.6 target).
-                if (off + 4 > extras.Length) { error = $"mip {i} cooked header truncated"; return false; }
-                int mipCookedHeader = ReadI32(extras, ref off, out error); if (error != "") return false;
-
+                // No per-mip cooked byte — that lives in the one-time sentinel
+                // above. The legacy comment about cooked-per-mip was based on
+                // CUE4Parse master's interpretation, which doesn't match the
+                // empirical UE4.22 Pamali layout.
                 if (off + 20 > extras.Length) { error = $"FByteBulkData header truncated at mip {i} (off={off}, extras={extras.Length})"; return false; }
                 int bulkFlags = ReadI32(extras, ref off, out error); if (error != "") return false;
 
@@ -461,7 +465,6 @@ public static class StripMipsApplier
                 int mipEntryEnd = off;
 
                 mips.Add(new ParsedMip(
-                    MipCookedHeader: mipCookedHeader,
                     BulkDataFlags: bulkFlags,
                     ElementCount: elementCount,
                     SizeOnDisk: sizeOnDisk,
@@ -486,6 +489,8 @@ public static class StripMipsApplier
                 FirstMipToSerialize = firstMipToSerialize,
                 NumMipsOffset = numMipsOffset,
                 NumMips = numMips,
+                CookedSentinelOffset = cookedSentinelOffset,
+                CookedSentinel = cookedSentinel,
                 MipsArrayStart = mipsArrayStart,
                 MipsArrayEnd = off,
                 Mips = mips,
@@ -583,8 +588,9 @@ public static class StripMipsApplier
         WriteInt32(buf, pd.NumMipsOffset, keptCount);
 
         // Step 2 + 3: surviving mips with patched offsets.
-        // Mirrors the parser layout exactly:
-        //   int32 cooked header | FByteBulkData(20 bytes) | mip W | mip H | mip Z
+        // Mirrors the parser layout exactly (no per-mip cooked byte — that
+        // lives once in the prefix's CookedSentinel which we've already copied):
+        //   FByteBulkData header (20 bytes) | optional inline payload | mip W | mip H | mip Z
         newOffsetsInUbulk = new List<long>(keptCount);
         long cursor = 0;
         for (int i = firstKept; i < pd.Mips.Count; i++)
@@ -594,7 +600,6 @@ public static class StripMipsApplier
             newOffsetsInUbulk.Add(newOffset);
             if (!m.IsInlinePayload) cursor += m.SizeOnDisk;
 
-            WriteInt32Stream(out_, m.MipCookedHeader);
             WriteInt32Stream(out_, m.BulkDataFlags);
             WriteInt32Stream(out_, m.ElementCount);
             WriteInt32Stream(out_, m.SizeOnDisk);
@@ -650,13 +655,14 @@ public static class StripMipsApplier
         public int FirstMipToSerialize;
         public int NumMipsOffset;
         public int NumMips;
+        public int CookedSentinelOffset;
+        public int CookedSentinel;
         public int MipsArrayStart;
         public int MipsArrayEnd;
         public List<ParsedMip> Mips = new();
     }
 
     internal sealed record ParsedMip(
-        int MipCookedHeader,
         int BulkDataFlags,
         int ElementCount,
         int SizeOnDisk,

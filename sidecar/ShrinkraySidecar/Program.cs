@@ -171,7 +171,19 @@ public static class Program
             if (!string.IsNullOrEmpty(name) && Enum.TryParse<UAssetAPI.UnrealTypes.EngineVersion>(name, true, out var parsed))
                 engineVer = parsed;
         }
-        return TextureBytesProbe.Probe(assetPath, engineVer);
+        bool walkMips = args.Value.TryGetProperty("walk_mips", out var wm)
+            && wm.ValueKind == JsonValueKind.True;
+        string? pakPath = args.Value.TryGetProperty("pak_path", out var pp) && pp.ValueKind == JsonValueKind.String
+            ? pp.GetString()
+            : null;
+        var game = CUE4Parse.UE4.Versions.EGame.GAME_UE5_LATEST;
+        if (args.Value.TryGetProperty("game", out var g) && g.ValueKind == JsonValueKind.String)
+        {
+            var name = g.GetString();
+            if (!string.IsNullOrEmpty(name) && Enum.TryParse<CUE4Parse.UE4.Versions.EGame>(name, true, out var parsed))
+                game = parsed;
+        }
+        return TextureBytesProbe.Probe(assetPath, engineVer, walkMips, pakPath, game);
     }
 
     /// <summary>

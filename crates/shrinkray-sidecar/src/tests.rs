@@ -1,6 +1,7 @@
 use super::*;
 use std::fs::File;
 use std::io::BufWriter;
+use std::path::PathBuf;
 
 /// Build a minimal real pak file with the given entries (path -> bytes).
 fn make_pak(path: &Path, entries: &[(&str, &[u8])]) {
@@ -136,6 +137,93 @@ fn apply_strip_mips_empty_targets_returns_empty_result() {
     assert_eq!(r.applied.len(), 0);
     assert_eq!(r.skipped.len(), 0);
     assert_eq!(r.total_saved_bytes, 0);
+}
+
+/// v0.6.0: the parser's tolerance against garbage bytes. We jam a triple of
+/// non-UE bytes into a pak, point apply_strip_mips at it, and assert the
+/// applier returns a structured skip — UAssetAPI throws on the bad header,
+/// the sidecar wraps the error in a StripSkipped, and the IPC layer hands
+/// it back as a normal result. Catches regressions where a parser change
+/// turns a UAssetAPI exception into an unhandled panic that crashes the
+/// sidecar mid-pipeline.
+#[test]
+fn apply_strip_mips_garbage_uasset_skipped_not_errored() {
+    let Some(mut s) = sidecar_or_skip() else { return };
+    let tmp = tempfile::tempdir().unwrap();
+    let pak_path = tmp.path().join("garbage.pak");
+    // Build the triple with bytes that look superficially like a UE asset
+    // (the .uasset has a recognisable magic so UAssetAPI gets past the
+    // open() call before failing on the malformed name map).
+    make_pak(
+        &pak_path,
+        &[
+            ("Game/Content/Bad.uasset", &[0xC1, 0x83, 0x2A, 0x9E, 0, 0, 0, 0, 0x40, 0, 0, 0]),
+            ("Game/Content/Bad.uexp", b"not a real uexp"),
+            ("Game/Content/Bad.ubulk", b"not a real ubulk"),
+        ],
+    );
+    let targets = vec![StripTarget {
+        asset_path: "Game/Content/Bad.uasset".into(),
+        max_dim: 1024,
+    }];
+    let r = s
+        .apply_strip_mips(&pak_path, &targets, Some("GAME_UE4_22"), Some("VER_UE4_22"))
+        .expect("apply_strip_mips should not error — bad input is a skip");
+    assert_eq!(r.applied.len(), 0, "garbage input must not appear to succeed");
+    assert_eq!(r.skipped.len(), 1, "garbage input should produce one skip");
+    assert!(
+        !r.skipped[0].reason.is_empty(),
+        "skip reason must be populated for the UI"
+    );
+}
+
+/// v0.6.0 final byte-exact regression. Runs the applier against a real
+/// Pamali pak when one is present at the documented local fixture path —
+/// asserts T_hairMask03 strips 4096→1024 with exactly 20 MB saved. Skips
+/// cleanly on machines/CI where the pak isn't checked out (we don't ship
+/// game assets in the public repo). Pre-release runs explicitly enable this
+/// via `SHRINKRAY_PAMALI_PAK=/path/to/pakchunk0-WindowsNoEditor.pak` or by
+/// placing the pak at the documented dev path.
+#[test]
+fn apply_strip_mips_pamali_t_hairmask03_saves_20mb() {
+    let Some(mut s) = sidecar_or_skip() else { return };
+    let pamali_pak: PathBuf = match std::env::var("SHRINKRAY_PAMALI_PAK") {
+        Ok(p) => PathBuf::from(p),
+        Err(_) => {
+            let default = PathBuf::from(
+                "/home/thankamax/Downloads/Misc/Test/Test 2/pjtRedLipstickDemo/Content/Paks/pakchunk0-WindowsNoEditor.pak",
+            );
+            if !default.exists() {
+                eprintln!("SKIP: Pamali pak not present at {} (set SHRINKRAY_PAMALI_PAK to override)", default.display());
+                return;
+            }
+            default
+        }
+    };
+    if !pamali_pak.exists() {
+        eprintln!("SKIP: Pamali pak missing at {}", pamali_pak.display());
+        return;
+    }
+    let targets = vec![StripTarget {
+        asset_path: "pjtRedLipstickDemo/Content/MainModules/GhostRigs/FL01_whiteLady/TWL_Material/T_hairMask03.uasset".into(),
+        max_dim: 1024,
+    }];
+    let r = s
+        .apply_strip_mips(&pamali_pak, &targets, Some("GAME_UE4_22"), Some("VER_UE4_22"))
+        .expect("apply_strip_mips ok on Pamali pak");
+    assert_eq!(r.skipped.len(), 0, "T_hairMask03 must apply cleanly: skipped={:?}", r.skipped);
+    assert_eq!(r.applied.len(), 1, "exactly one texture applied");
+    let a = &r.applied[0];
+    assert_eq!(a.drop_mip_count, 2, "drop mip 0 (4096) + mip 1 (2048)");
+    assert_eq!(a.kept_mip_count, 11, "kept mips 2-12");
+    assert_eq!(a.original_top_dim, 4096);
+    assert_eq!(a.kept_top_dim, 1024);
+    // 4096² + 2048² BC3 = 16 MB + 4 MB = exactly 20 MB.
+    assert_eq!(
+        a.saved_bytes, 20_971_520,
+        "exact 20 MB save expected (mip 0 16 MB + mip 1 4 MB)"
+    );
+    assert_eq!(r.total_saved_bytes, 20_971_520);
 }
 
 /// rc1: pointing the applier at a non-existent asset path inside a pak yields

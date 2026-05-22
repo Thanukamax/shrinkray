@@ -28,6 +28,10 @@ use std::time::{SystemTime, UNIX_EPOCH};
 pub const BACKUP_DIR: &str = "shrinkray_backup";
 const MANIFEST_FILE: &str = "manifest.json";
 const PAYLOADS_DIR: &str = "payloads";
+/// v0.6.0 added the `texture_strips` field on Entry. The field is
+/// `#[serde(default)]` so old (version=1) manifests round-trip cleanly,
+/// and old shrinkray reading a new manifest just ignores the extra field.
+/// Version stays at 1 — bump only when a breaking schema change lands.
 const MANIFEST_VERSION: u32 = 1;
 
 #[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq)]
@@ -60,6 +64,51 @@ pub struct Entry {
     pub new_size: Option<u64>,
     /// Path to the saved original bytes, relative to BACKUP_DIR.
     pub payload: String,
+    /// v0.6.0: when this entry is a pak rewrite that includes texture mip
+    /// strips, each touched texture is recorded here with enough metadata for
+    /// v0.7's AI re-expand path to know how to reconstruct the dropped mips.
+    /// Empty for L10N strip / loose-file recompression / generic replace ops.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub texture_strips: Vec<TextureStripRecord>,
+}
+
+/// Per-texture record of what shrinkray stripped from a pak rewrite.
+///
+/// v0.6.0 uses this purely for forward-compat — `Backup::restore()` ignores
+/// the field today because every pak rewrite also saves the full original
+/// pak as a payload, so byte-exact restore works the same as L10N strip.
+///
+/// v0.7 reads these records to drive AI-based re-expand for textures whose
+/// `compression_settings` routes through the AI path (diffuse / UI / data
+/// channels in `TC_Default` / `TC_Grayscale`). Normal maps (`TC_Normalmap`)
+/// stay on the byte-exact backup path.
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+pub struct TextureStripRecord {
+    /// Pak-relative POSIX path of the .uasset (the canonical key — the
+    /// .uexp and .ubulk siblings ride along by extension).
+    pub asset_path: String,
+    /// Texture export name (UAssetAPI's `Export.ObjectName`).
+    pub export_name: String,
+    /// SizeX of the original top mip before strip (e.g. 4096).
+    pub original_top_dim: u32,
+    /// SizeX of the new top mip after strip (e.g. 1024). Equals the old
+    /// `Mips[drop_mip_count].SizeX`.
+    pub stripped_top_dim: u32,
+    /// How many top mips were dropped (e.g. 2 = mip 0 + mip 1).
+    pub drop_mip_count: u32,
+    /// How many mips survived in the rewritten texture.
+    pub kept_mip_count: u32,
+    /// UE pixel format string (e.g. "PF_DXT5", "PF_BC5"). Drives the
+    /// "is this a normal map?" decision when CompressionSettings is missing.
+    pub pixel_format: String,
+    /// Texture compression class from `UTexture.CompressionSettings`.
+    /// Normal maps (`TC_Normalmap`) and data textures (`TC_Grayscale`,
+    /// `TC_VectorDisplacementmap`) must NOT use AI re-expand; everything
+    /// else can. None means the classifier had to fall back on name/format.
+    #[serde(default)]
+    pub compression_settings: Option<String>,
+    /// Bytes saved on this single texture (sum of dropped mips' SizeOnDisk).
+    pub saved_bytes: u64,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -175,6 +224,7 @@ impl Backup {
             new_sha256: Some(sha256_hex(new_bytes)),
             new_size: Some(new_bytes.len() as u64),
             payload,
+            texture_strips: Vec::new(),
         };
         self.manifest.entries.push(entry);
         self.persist_manifest()
@@ -197,6 +247,7 @@ impl Backup {
             new_sha256: None,
             new_size: None,
             payload: String::new(),
+            texture_strips: Vec::new(),
         };
         self.manifest.entries.push(entry);
         self.persist_manifest()
@@ -218,9 +269,52 @@ impl Backup {
             new_sha256: None,
             new_size: None,
             payload,
+            texture_strips: Vec::new(),
         };
         self.manifest.entries.push(entry);
         self.persist_manifest()
+    }
+
+    /// v0.6.0: record a pak rewrite that includes texture mip strips. Stores
+    /// the original pak bytes as a normal Replace-op payload (byte-exact
+    /// restore continues to work via `restore()`) plus the per-texture
+    /// metadata that v0.7's AI re-expand path needs.
+    ///
+    /// Caller is responsible for writing `new_bytes` to `pak_path` after this
+    /// returns. Mirrors `record_full_replace` semantics — the strip records
+    /// are additive metadata, not a replacement for the payload.
+    pub fn record_pak_rewrite_with_strips(
+        &mut self,
+        pak_path: &Path,
+        new_bytes: &[u8],
+        strips: Vec<TextureStripRecord>,
+    ) -> Result<()> {
+        let abs = self.absolutize(pak_path)?;
+        let original = fs::read(&abs).with_context(|| format!("read {}", abs.display()))?;
+        let original_sha256 = sha256_hex(&original);
+        let original_size = original.len() as u64;
+        let payload = self.write_payload(&original)?;
+        let entry = Entry {
+            path: rel_posix(&abs, &self.root)?,
+            op: Op::Replace,
+            original_sha256,
+            original_size,
+            new_sha256: Some(sha256_hex(new_bytes)),
+            new_size: Some(new_bytes.len() as u64),
+            payload,
+            texture_strips: strips,
+        };
+        self.manifest.entries.push(entry);
+        self.persist_manifest()
+    }
+
+    /// v0.7-ready helper: enumerate texture strips recorded across all entries
+    /// in insertion order. The AI re-expand executor uses this to know which
+    /// textures need re-inflating and to what dimensions.
+    pub fn texture_strips(&self) -> impl Iterator<Item = (&str, &TextureStripRecord)> {
+        self.manifest.entries.iter().flat_map(|e| {
+            e.texture_strips.iter().map(move |s| (e.path.as_str(), s))
+        })
     }
 
     /// Walk the manifest in reverse and write every saved payload back to its
@@ -612,6 +706,101 @@ mod tests {
         assert!(wav.exists());
         assert!(!opus.exists());
         assert_eq!(fs::read(&wav).unwrap(), b"french_voice_bytes");
+    }
+
+    fn sample_strip(asset: &str, original: u32, stripped: u32) -> TextureStripRecord {
+        TextureStripRecord {
+            asset_path: asset.into(),
+            export_name: "T_test".into(),
+            original_top_dim: original,
+            stripped_top_dim: stripped,
+            drop_mip_count: (original / stripped).trailing_zeros(),
+            kept_mip_count: 11,
+            pixel_format: "PF_DXT5".into(),
+            compression_settings: Some("TC_Default".into()),
+            saved_bytes: (original as u64 * original as u64) - (stripped as u64 * stripped as u64),
+        }
+    }
+
+    #[test]
+    fn record_pak_rewrite_carries_strip_metadata() {
+        let tmp = tempfile::tempdir().unwrap();
+        let root = setup_game(tmp.path());
+        let pak = root.join("Content/Paks/pakchunk0.pak");
+        let new_bytes = b"rewritten_pak_with_smaller_textures";
+
+        let mut backup = Backup::new(&root, BackupMode::Differential).unwrap();
+        let strips = vec![
+            sample_strip("Game/Content/T_hair.uasset", 4096, 1024),
+            sample_strip("Game/Content/T_face.uasset", 2048, 1024),
+        ];
+        backup.record_pak_rewrite_with_strips(&pak, new_bytes, strips.clone()).unwrap();
+        fs::write(&pak, new_bytes).unwrap();
+
+        // Manifest has one entry, with both strip records attached.
+        assert_eq!(backup.entries().len(), 1);
+        assert_eq!(backup.entries()[0].op, Op::Replace);
+        assert_eq!(backup.entries()[0].texture_strips, strips);
+
+        // Byte-exact restore still works the same as record_full_replace.
+        let report = backup.restore().unwrap();
+        assert!(report.failures.is_empty());
+        assert_eq!(report.restored, vec!["Content/Paks/pakchunk0.pak"]);
+        assert_eq!(fs::read(&pak).unwrap(), b"original_pak_bytes_12345");
+    }
+
+    #[test]
+    fn texture_strips_iterator_yields_all_records() {
+        let tmp = tempfile::tempdir().unwrap();
+        let root = setup_game(tmp.path());
+        let pak = root.join("Content/Paks/pakchunk0.pak");
+        let mut backup = Backup::new(&root, BackupMode::Differential).unwrap();
+        backup.record_pak_rewrite_with_strips(
+            &pak,
+            b"smaller",
+            vec![
+                sample_strip("Game/T_a.uasset", 4096, 1024),
+                sample_strip("Game/T_b.uasset", 2048, 1024),
+                sample_strip("Game/T_c.uasset", 8192, 2048),
+            ],
+        ).unwrap();
+        let strips: Vec<_> = backup.texture_strips().collect();
+        assert_eq!(strips.len(), 3);
+        assert_eq!(strips[0].1.asset_path, "Game/T_a.uasset");
+        assert_eq!(strips[2].1.stripped_top_dim, 2048);
+    }
+
+    #[test]
+    fn old_manifest_without_texture_strips_loads_clean() {
+        // Simulates loading a v0.5-era manifest (where Entry had no
+        // `texture_strips` field) — serde default fills it as an empty Vec.
+        let tmp = tempfile::tempdir().unwrap();
+        let root = setup_game(tmp.path());
+        let _ = Backup::new(&root, BackupMode::Differential).unwrap();
+        let manifest_path = backup_dir_for(&root.canonicalize().unwrap()).join(MANIFEST_FILE);
+        // Hand-write a v0.5-shaped entry into the manifest (no texture_strips
+        // field at all — the most pessimistic forward-compat case).
+        let legacy = serde_json::json!({
+            "version": 1,
+            "shrinkray_version": "0.5.0",
+            "created_at": 0,
+            "root": root.canonicalize().unwrap().to_string_lossy(),
+            "mode": "differential",
+            "entries": [{
+                "path": "Content/Paks/pakchunk0.pak",
+                "op": "replace",
+                "original_sha256": "deadbeef",
+                "original_size": 24,
+                "new_sha256": null,
+                "new_size": null,
+                "payload": "payloads/0001.bin"
+            }]
+        });
+        fs::write(&manifest_path, serde_json::to_string_pretty(&legacy).unwrap()).unwrap();
+
+        let loaded = Backup::load(&root).unwrap();
+        assert_eq!(loaded.entries().len(), 1);
+        assert!(loaded.entries()[0].texture_strips.is_empty());
     }
 
     #[test]
