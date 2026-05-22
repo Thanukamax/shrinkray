@@ -15,6 +15,10 @@ anyhow.workspace = true
 thiserror.workspace = true
 sha2.workspace = true
 repak.workspace = true
+# v0.7.4: standalone delta-codec crate. Always-on (no heavy transitive deps)
+# so `predictors::EsrganX4Predictor` can `impl shrinkray_delta_codec::Predictor`
+# without making the codec depend on `ort`. Codec stays publishable alone.
+shrinkray-delta-codec.workspace = true
 # v0.7.0: ORT + ndarray drive the inference module. Both behind a `inference`
 # feature so the core crate builds without them on slim configs (CI of the
 # audit/strip subsystem doesn't need a 200 MB ORT binary).
@@ -31,3 +35,28 @@ inference = ["dep:ort", "dep:ndarray", "dep:image", "dep:image_dds"]
 
 [dev-dependencies]
 tempfile.workspace = true
+# Bench/corpus harness deps (used only by the paper-bench examples below).
+# image gets webp turned on locally so the corpus walker can ingest PBR
+# downloads regardless of source format.
+clap = { workspace = true }
+image = { version = "0.25", default-features = false, features = ["png", "jpeg", "webp"] }
+rayon = "1.10"
+# walkdir + shrinkray-delta-codec live in [dependencies] already (workspace
+# pulled the delta-codec into core in the v0.7.4 reshuffle), no need to dup
+# them here.
+
+[[example]]
+name = "bench_real_content"
+path = "examples/bench_real_content.rs"
+
+[[example]]
+name = "gen_synthetic_corpus"
+path = "examples/gen_synthetic_corpus.rs"
+
+# v0.7.4: ESRGAN-x4 predictor smoke check. Requires the `inference` feature
+# (ORT pulls a ~200 MB native lib). Skips at runtime if the ONNX model isn't
+# on disk, so it's safe to invoke in slim CI lanes.
+[[example]]
+name = "esrgan_smoke"
+path = "examples/esrgan_smoke.rs"
+required-features = ["inference"]

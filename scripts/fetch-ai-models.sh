@@ -30,16 +30,26 @@ mkdir -p "${DEST_DIR}"
 
 # Format: name|url|sha256
 #
-# v0.7.0 ships a smoke model (ONNX zoo's sub-pixel CNN super-resolution, 3×,
-# 240 KB) for pipeline validation. Real-ESRGAN x4 production models are
-# 17-65 MB and the upstream hosting situation is volatile (HF gating,
-# release renaming, etc.); for v0.7.1 we'll move the production models to a
-# shrinkray-hosted mirror so installs aren't dependent on third-party uptime.
+# Two models ship today:
+#   1. super-resolution-10.onnx — ONNX-zoo sub-pixel CNN, ~240 KB. Smoke-test
+#      model: validates ORT is wired, NOT a Real-ESRGAN. Fixed 224×224 input.
+#   2. realesrgan-x4-general.onnx — Real-ESRGAN x4 (xinntao upstream weights,
+#      BSD-3-Clause), ONNX export via crj/dl-ws on HF. ~67 MB. **Dynamic input
+#      shape** [1, 3, H, W] → [1, 3, 4H, 4W], opset 10, FP32. This is the
+#      load-bearing production model the Δ-Codec's RealEsrganX4 predictor
+#      uses. SHA-256 is pinned; mismatch aborts the fetch.
 #
-# Until then, point SHRINKRAY_AI_MODEL at a local Real-ESRGAN ONNX you've
-# downloaded yourself, or run inference with the smoke model for testing.
+# Upstream weights:
+#   xinntao/Real-ESRGAN  https://github.com/xinntao/Real-ESRGAN  (BSD-3-Clause)
+#
+# Mirror:
+#   crj/dl-ws on HuggingFace. Fallback to AXERA-TECH/Real-ESRGAN (same weights,
+#   different export) if the primary mirror disappears.
+#
+# Override with SHRINKRAY_AI_MODEL=/path/to/your.onnx for testing alternatives.
 MODELS=(
   "super-resolution-10.onnx|https://github.com/onnx/models/raw/main/validated/vision/super_resolution/sub_pixel_cnn_2016/model/super-resolution-10.onnx|"
+  "realesrgan-x4-general.onnx|https://huggingface.co/crj/dl-ws/resolve/main/real_esrgan_x4.onnx|4139cc1585d04851ccd41570b0f76e775c96e064ca292d5372b6031704dda0d3"
 )
 
 MODE="${1:-all}"
@@ -53,7 +63,10 @@ fetch() {
   fi
   echo "[fetch-ai-models] downloading ${name}"
   echo "[fetch-ai-models]   from: ${url}"
-  if ! curl -sL --max-time 120 --fail -o "${dest}" "${url}"; then
+  # 10 min ceiling — the Real-ESRGAN model is ~67 MB and HuggingFace can
+  # throttle to ~1 MB/s on cold paths. Smoke model is 240 KB so the timeout
+  # only hits on the big fetch.
+  if ! curl -sL --max-time 600 --fail -o "${dest}" "${url}"; then
     echo "[fetch-ai-models] download FAILED for ${name}" >&2
     rm -f "${dest}"
     return 1
@@ -98,6 +111,13 @@ case "${MODE}" in
     check_only
     ;;
   --small)
+    # Smoke-only fetch — 240 KB sub-pixel CNN, enough to validate ORT wiring
+    # without pulling the 67 MB Real-ESRGAN. Used in slim CI lanes.
+    IFS='|' read -r n u s <<< "${MODELS[0]}"
+    fetch "$n" "$u" "$s"
+    ;;
+  --esrgan)
+    # Production fetch — just the Real-ESRGAN x4. ~67 MB.
     IFS='|' read -r n u s <<< "${MODELS[1]}"
     fetch "$n" "$u" "$s"
     ;;
@@ -108,7 +128,7 @@ case "${MODE}" in
     done
     ;;
   *)
-    echo "usage: fetch-ai-models.sh [--all | --small | --check]" >&2
+    echo "usage: fetch-ai-models.sh [--all | --small | --esrgan | --check]" >&2
     exit 64
     ;;
 esac

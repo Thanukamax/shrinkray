@@ -17,6 +17,10 @@ pub mod bcn;
 #[cfg(feature = "inference")]
 pub mod inference;
 pub mod pak;
+// v0.7.4: production Predictor impls for the Δ-Codec. The module gate is
+// itself bare so the codec's trait is always wired through; individual
+// predictors gate themselves on `inference` because they need ORT.
+pub mod predictors;
 pub mod recompress;
 pub mod strip;
 pub mod texture;
