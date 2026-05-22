@@ -16,3 +16,4 @@ pub mod pak;
 pub mod recompress;
 pub mod strip;
 pub mod texture;
+pub mod texture_strip;

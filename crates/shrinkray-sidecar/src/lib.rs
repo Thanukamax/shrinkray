@@ -162,6 +162,15 @@ pub struct StripAppliedTexture {
     pub original_top_dim: i32,
     pub kept_top_dim: i32,
     pub saved_bytes: i64,
+    /// UE pixel-format string (e.g. "PF_DXT5", "PF_BC5"). Always present —
+    /// the applier can't strip a texture without parsing FTexturePlatformData.
+    #[serde(default)]
+    pub pixel_format: String,
+    /// UTexture.CompressionSettings UPROPERTY (e.g. "TC_Default",
+    /// "TC_Normalmap", "TC_Grayscale"). None when the cook didn't serialize
+    /// it — most modern cooks do, even when the value equals the default.
+    #[serde(default)]
+    pub compression_settings: Option<String>,
     pub files: Vec<StripAppliedFile>,
     pub original_files: Vec<StripAppliedFile>,
 }

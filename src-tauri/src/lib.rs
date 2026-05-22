@@ -2,9 +2,12 @@ use std::collections::HashSet;
 use std::path::PathBuf;
 use std::sync::Mutex;
 
+use anyhow::Context;
+use base64::prelude::{Engine as _, BASE64_STANDARD};
 use shrinkray_audit::AuditReport;
 use shrinkray_core::ai_restore::{plan_restore_ai, RestoreAiPlan};
 use shrinkray_core::classifier::{Policy, TextureFacts};
+use shrinkray_core::texture_strip::{self, AppliedTexture, PakStripReport, SkippedTexture};
 use shrinkray_core::{analyze, backup, recompress, strip};
 use shrinkray_sidecar::{
     ApplyStripMipsResult, InspectAssetResult, ListAssetsResult, PingResult, PlanStripMipsResult,
@@ -181,6 +184,90 @@ fn sidecar_apply_strip_mips(
     state: tauri::State<SidecarHandle>,
 ) -> Result<ApplyStripMipsResult, String> {
     state.with(|s| s.apply_strip_mips(&pak_path, &targets, game.as_deref(), engine_version.as_deref()))
+}
+
+/// v0.6.1: end-to-end mip strip applied to a pak on disk. Loads the backup
+/// for `folder_path` (fails if absent — mirrors `apply_strip` / `apply_recompress`
+/// gate), asks the sidecar to compute modified .uasset/.uexp/.ubulk bytes for
+/// every target, then hands those bytes to `texture_strip::apply_to_pak` for
+/// the repak substitution + backup recording + atomic rename.
+///
+/// Per-texture failures (sidecar skips) are surfaced in the report; one bad
+/// texture doesn't halt the run. If every target is skipped, the pak is left
+/// untouched and the report carries `original_size == new_size`.
+#[tauri::command]
+fn apply_strip_mips_to_folder(
+    folder_path: String,
+    pak_path: String,
+    targets: Vec<StripTarget>,
+    game: Option<String>,
+    engine_version: Option<String>,
+    state: tauri::State<SidecarHandle>,
+) -> Result<PakStripReport, String> {
+    state.with(|s| {
+        apply_strip_mips_to_folder_impl(
+            s,
+            &folder_path,
+            &pak_path,
+            &targets,
+            game.as_deref(),
+            engine_version.as_deref(),
+        )
+    })
+}
+
+/// Pure-Rust body of the Tauri command, exposed so integration tests can
+/// drive the end-to-end pipeline against a real sidecar + a Pamali pak copy
+/// without spinning up the Tauri runtime. Caller supplies the live `Sidecar`.
+pub fn apply_strip_mips_to_folder_impl(
+    sidecar: &mut Sidecar,
+    folder_path: &str,
+    pak_path: &str,
+    targets: &[StripTarget],
+    game: Option<&str>,
+    engine_version: Option<&str>,
+) -> anyhow::Result<PakStripReport> {
+    let root = PathBuf::from(folder_path);
+    let mut b = backup::Backup::load(&root)
+        .with_context(|| format!("backup required before apply_strip_mips_to_folder for {}", root.display()))?;
+    let pak = PathBuf::from(pak_path);
+    if !pak.exists() {
+        anyhow::bail!("pak not found: {}", pak.display());
+    }
+    let sidecar_result = sidecar.apply_strip_mips(pak_path, targets, game, engine_version)?;
+
+    // Convert sidecar StripAppliedTexture → core AppliedTexture (base64 decode
+    // the file payloads). Any decode failure aborts the whole run rather than
+    // half-rewriting the pak.
+    let mut applied = Vec::with_capacity(sidecar_result.applied.len());
+    for t in sidecar_result.applied {
+        let mut files = std::collections::HashMap::with_capacity(t.files.len());
+        for f in t.files {
+            let bytes = BASE64_STANDARD
+                .decode(&f.bytes_base64)
+                .with_context(|| format!("base64 decode failed for {}", f.pak_path))?;
+            files.insert(f.pak_path, bytes);
+        }
+        applied.push(AppliedTexture {
+            asset_path: t.asset_path,
+            export_name: t.export_name,
+            drop_mip_count: t.drop_mip_count.max(0) as u32,
+            kept_mip_count: t.kept_mip_count.max(0) as u32,
+            original_top_dim: t.original_top_dim.max(0) as u32,
+            stripped_top_dim: t.kept_top_dim.max(0) as u32,
+            saved_bytes: t.saved_bytes.max(0) as u64,
+            pixel_format: t.pixel_format,
+            compression_settings: t.compression_settings,
+            files,
+        });
+    }
+    let skipped: Vec<SkippedTexture> = sidecar_result
+        .skipped
+        .into_iter()
+        .map(|s| SkippedTexture { asset_path: s.asset_path, reason: s.reason })
+        .collect();
+
+    texture_strip::apply_to_pak(&pak, applied, skipped, &mut b)
 }
 
 /// v0.7 scaffold: for the given pak + max_dim, produce a per-texture restore
@@ -381,6 +468,7 @@ pub fn run() {
             sidecar_inspect_asset,
             sidecar_plan_strip_mips,
             sidecar_apply_strip_mips,
+            apply_strip_mips_to_folder,
             sidecar_plan_restore_ai,
             sidecar_apply_restore_ai,
             list_dir,

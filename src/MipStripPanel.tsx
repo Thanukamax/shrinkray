@@ -74,6 +74,29 @@ type ApplyStripMipsResult = {
   total_saved_bytes: number
 }
 
+// v0.6.1: shape returned by the new apply_strip_mips_to_folder command.
+// Mirrors shrinkray_core::texture_strip::PakStripReport.
+type TextureStripRecord = {
+  asset_path: string
+  export_name: string
+  original_top_dim: number
+  stripped_top_dim: number
+  drop_mip_count: number
+  kept_mip_count: number
+  pixel_format: string
+  compression_settings: string | null
+  saved_bytes: number
+}
+
+type PakStripReport = {
+  pak: string
+  original_size: number
+  new_size: number
+  applied: TextureStripRecord[]
+  skipped: StripSkipped[]
+  total_saved_bytes: number
+}
+
 const MAX_DIMS = [4096, 2048, 1024, 512]
 
 const GAME_VERSIONS = [
@@ -142,7 +165,19 @@ function classClass(c: RestoreClass): string {
   }
 }
 
-export function MipStripPanel() {
+type MipStripPanelProps = {
+  /// Game folder root chosen at the App level. When set + backupLoaded is true
+  /// + previewOnly is false, the "apply" button triggers the real write-back
+  /// flow (apply_strip_mips_to_folder) instead of the bytes-only sidecar call.
+  folderPath: string | null
+  /// Whether a shrinkray_backup exists for `folderPath`. Gates the write path.
+  backupLoaded: boolean
+  /// Global preview-only toggle in the App header. When true, the apply
+  /// button stays read-only (sidecar bytes only, no disk write).
+  previewOnly: boolean
+}
+
+export function MipStripPanel({ folderPath, backupLoaded, previewOnly }: MipStripPanelProps) {
   const [pak, setPak] = useState<string | null>(null)
   const [maxDim, setMaxDim] = useState<number>(2048)
   const [game, setGame] = useState<string>('GAME_UE5_LATEST')
@@ -152,8 +187,13 @@ export function MipStripPanel() {
   const [loading, setLoading] = useState(false)
   const [error, setError] = useState<string | null>(null)
   const [applyResult, setApplyResult] = useState<ApplyStripMipsResult | null>(null)
+  const [writeReport, setWriteReport] = useState<PakStripReport | null>(null)
   const [applying, setApplying] = useState(false)
   const [exemptNormals, setExemptNormals] = useState(true)
+
+  // Write mode is enabled only when the App has a folder + a loaded backup
+  // and the user hasn't toggled the global preview-only switch on.
+  const canWriteToDisk = !!folderPath && backupLoaded && !previewOnly
 
   // Map asset_path → RestoreClass, derived from aiPlan. Used to render the
   // routing per row + to filter the apply targets (skip "no_strip" textures).
@@ -168,14 +208,14 @@ export function MipStripPanel() {
   async function tryApply() {
     if (!pak || !plan) return
     setApplyResult(null)
+    setWriteReport(null)
     setApplying(true)
     setError(null)
     try {
-      // Filter: drop NoStrip-class textures (data textures / lookups) and,
-      // when exemptNormals is on, drop ExactBackup-class too (normals etc).
-      // Leave that filtering to v0.6.0 final — for rc1 we send all items and
-      // let the sidecar's parser decide what it can handle. The skip-reason
-      // diagnostic surfaces both classifier-driven skips and parser-stage skips.
+      // Drop NoStrip-class textures (lookups / data) unconditionally; drop
+      // ExactBackup-class (normals etc) when the user has the exempt toggle
+      // on (default). Surviving targets get either the bytes-only sidecar
+      // call (preview) or the real disk-write command (write mode).
       const targets = plan.items
         .filter((it) => {
           const c = classByAsset.get(it.asset_path)
@@ -185,13 +225,24 @@ export function MipStripPanel() {
         })
         .map((it) => ({ asset_path: it.asset_path, max_dim: maxDim }))
 
-      const r = await invoke<ApplyStripMipsResult>('sidecar_apply_strip_mips', {
-        pakPath: pak,
-        targets,
-        game,
-        engineVersion: uassetapiVerFor(game),
-      })
-      setApplyResult(r)
+      if (canWriteToDisk && folderPath) {
+        const r = await invoke<PakStripReport>('apply_strip_mips_to_folder', {
+          folderPath,
+          pakPath: pak,
+          targets,
+          game,
+          engineVersion: uassetapiVerFor(game),
+        })
+        setWriteReport(r)
+      } else {
+        const r = await invoke<ApplyStripMipsResult>('sidecar_apply_strip_mips', {
+          pakPath: pak,
+          targets,
+          game,
+          engineVersion: uassetapiVerFor(game),
+        })
+        setApplyResult(r)
+      }
     } catch (e) {
       setError(String(e))
     } finally {
@@ -271,19 +322,19 @@ export function MipStripPanel() {
       .sort((a, b) => b.save - a.save)
   }, [plan])
 
-  // Skip-reason histogram for the apply result. Multiple textures can share
-  // the same reason ("inline payload mip", "asset not found", etc); collapse
-  // them so the UI doesn't render hundreds of identical lines.
+  // Skip-reason histogram for the apply result (either preview or write mode
+  // — same shape on `skipped`). Multiple textures can share the same reason
+  // ("inline payload mip", "asset not found", etc); collapse so the UI doesn't
+  // render hundreds of identical lines.
   const skipHistogram = useMemo(() => {
-    if (!applyResult) return [] as { reason: string; count: number }[]
+    const source = writeReport?.skipped ?? applyResult?.skipped ?? []
+    if (source.length === 0) return [] as { reason: string; count: number }[]
     const m = new Map<string, number>()
-    for (const s of applyResult.skipped) {
-      m.set(s.reason, (m.get(s.reason) ?? 0) + 1)
-    }
+    for (const s of source) m.set(s.reason, (m.get(s.reason) ?? 0) + 1)
     return Array.from(m.entries())
       .map(([reason, count]) => ({ reason, count }))
       .sort((a, b) => b.count - a.count)
-  }, [applyResult])
+  }, [applyResult, writeReport])
 
   useEffect(() => {
     if (plan?.pak_path) document.title = `shrinkray · ${plan.pak_path.split('/').pop()}`
@@ -303,15 +354,16 @@ export function MipStripPanel() {
         <div>
           <h2>
             Texture mip strip{' '}
-            <span className="preview-tag">v0.6.0-rc1 · apply path in flight</span>
+            <span className="preview-tag">v0.6.1 · write to disk</span>
           </h2>
           <p className="muted small inspector-blurb">
             Pick a readable UE4 .pak and a maximum texture dimension. The plan
             walks every cooked texture, projects savings, and routes each
             texture through the classifier (AI re-expand vs exact backup vs
-            skip). v0.6.0-rc1 wires the apply path end-to-end; per-mip parser
-            for UE4.22 cooks is still being pinned down — skipped textures
-            surface their reason inline.
+            skip). With a game folder + loaded backup, "apply" rewrites the
+            pak on disk and records strip metadata for v0.7's AI restore.
+            Without those, "apply" stays in preview — bytes are computed but
+            never written.
           </p>
         </div>
         <button
@@ -501,21 +553,49 @@ export function MipStripPanel() {
           {plan.items.length > 0 && (
             <div className="mipstrip-apply">
               <button onClick={tryApply} disabled={loading || applying} className="primary">
-                {applying ? 'applying…' : 'apply (write to pak)'}
+                {applying
+                  ? canWriteToDisk
+                    ? 'writing to pak…'
+                    : 'computing…'
+                  : canWriteToDisk
+                    ? 'apply (write to pak)'
+                    : 'apply (preview — no disk write)'}
               </button>
               <p className="muted small">
-                v0.6.0-rc1: applier framework is wired. Targets that hit the
-                in-flight per-mip parser path will land in "skipped" with a
-                diagnostic reason rather than corrupting the pak.
+                {canWriteToDisk ? (
+                  <>
+                    Write mode is live. Backed up at the folder root —
+                    <code> shrinkray restore</code> reverts the pak byte-exact
+                    if you change your mind.
+                  </>
+                ) : (
+                  <>
+                    {!folderPath
+                      ? 'Pick a game folder in the panel above to enable write mode.'
+                      : !backupLoaded
+                        ? 'Backup is required before write mode. Click "ensure backup" above.'
+                        : 'Preview-only mode is on. Toggle it off in the header to write to disk.'}
+                  </>
+                )}
               </p>
 
-              {applyResult && (
+              {writeReport && (
                 <div className="mipstrip-apply-note">
                   <strong>
-                    applied: {applyResult.applied.length} · skipped:{' '}
-                    {applyResult.skipped.length} · saved:{' '}
-                    {formatBytes(applyResult.total_saved_bytes)}
+                    rewrote pak · applied: {writeReport.applied.length} ·
+                    skipped: {writeReport.skipped.length} · saved:{' '}
+                    {formatBytes(writeReport.total_saved_bytes)}
                   </strong>
+                  <p className="muted small">
+                    {formatBytes(writeReport.original_size)} →{' '}
+                    {formatBytes(writeReport.new_size)} on disk
+                    {writeReport.applied.length > 0 && (
+                      <>
+                        {' · '}backup manifest carries {writeReport.applied.length}{' '}
+                        strip record(s) for v0.7 restore.
+                      </>
+                    )}
+                  </p>
                   {skipHistogram.length > 0 && (
                     <details>
                       <summary>
@@ -533,13 +613,36 @@ export function MipStripPanel() {
                       </ul>
                     </details>
                   )}
-                  {applyResult.applied.length === 0 && (
-                    <p className="muted small">
-                      Nothing applied yet. The framework is wired end-to-end
-                      (extract → parse → splice → regen → write back); the
-                      per-mip layout pin-down lands in v0.6.0 final. Original
-                      pak is untouched.
-                    </p>
+                </div>
+              )}
+
+              {applyResult && !writeReport && (
+                <div className="mipstrip-apply-note">
+                  <strong>
+                    preview · applied: {applyResult.applied.length} · skipped:{' '}
+                    {applyResult.skipped.length} · would save:{' '}
+                    {formatBytes(applyResult.total_saved_bytes)}
+                  </strong>
+                  <p className="muted small">
+                    Bytes computed but not written to disk. Disable preview
+                    mode + ensure a backup is loaded to commit.
+                  </p>
+                  {skipHistogram.length > 0 && (
+                    <details>
+                      <summary>
+                        skip reasons ({skipHistogram.length} distinct)
+                      </summary>
+                      <ul className="reasons">
+                        {skipHistogram.map((s) => (
+                          <li key={s.reason}>
+                            <span className="muted small">
+                              {s.count.toLocaleString()} ×
+                            </span>{' '}
+                            {s.reason}
+                          </li>
+                        ))}
+                      </ul>
+                    </details>
                   )}
                 </div>
               )}

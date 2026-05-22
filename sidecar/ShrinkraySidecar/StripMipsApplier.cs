@@ -68,6 +68,8 @@ public sealed record StripAppliedTexture(
     [property: JsonPropertyName("original_top_dim")] int OriginalTopDim,
     [property: JsonPropertyName("kept_top_dim")] int KeptTopDim,
     [property: JsonPropertyName("saved_bytes")] long SavedBytes,
+    [property: JsonPropertyName("pixel_format")] string PixelFormat,
+    [property: JsonPropertyName("compression_settings")] string? CompressionSettings,
     [property: JsonPropertyName("files")] IReadOnlyList<StripAppliedFile> Files,
     [property: JsonPropertyName("original_files")] IReadOnlyList<StripAppliedFile> OriginalFiles);
 
@@ -342,8 +344,43 @@ public static class StripMipsApplier
             OriginalTopDim: originalTop,
             KeptTopDim: keptTop,
             SavedBytes: savedBytes,
+            PixelFormat: parsed.PixelFormat,
+            CompressionSettings: ExtractCompressionSettings(tex),
             Files: modifiedFiles,
             OriginalFiles: originalFiles), null);
+    }
+
+    /// <summary>
+    /// Pulls the `CompressionSettings` UPROPERTY off a Texture2D export when
+    /// the cook serialized it. UE writes it as either BytePropertyData (older
+    /// FName-encoded byte enum) or EnumPropertyData (newer FName-keyed enum).
+    /// Returns null when the property isn't present (uncommon — most cooks
+    /// emit it even when the value is TC_Default).
+    /// </summary>
+    private static string? ExtractCompressionSettings(UAssetAPI.ExportTypes.Export tex)
+    {
+        // Only NormalExport carries tagged properties as a typed list. Other
+        // export shapes (RawExport / FunctionExport) don't get classified.
+        if (tex is not UAssetAPI.ExportTypes.NormalExport normal) return null;
+        foreach (var prop in normal.Data)
+        {
+            var propName = prop?.Name?.Value?.Value;
+            if (propName != "CompressionSettings") continue;
+            switch (prop)
+            {
+                case UAssetAPI.PropertyTypes.Objects.BytePropertyData bp:
+                    return bp.EnumValue?.Value?.Value
+                        ?? (bp.Value != 0 ? bp.Value.ToString() : null);
+                case UAssetAPI.PropertyTypes.Objects.EnumPropertyData ep:
+                    return ep.Value?.Value?.Value;
+                case UAssetAPI.PropertyTypes.Objects.NamePropertyData np:
+                    return np.Value?.Value?.Value;
+                default:
+                    return prop?.PropertyType?.Value;
+            }
+        }
+        // Cook didn't emit it — default TC_Default by UE convention.
+        return null;
     }
 
     /// <summary>

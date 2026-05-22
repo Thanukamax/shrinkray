@@ -466,7 +466,7 @@ export default function App() {
 
   return (
     <div className="window app-shell active glass">
-      <TitleBar title="shrinkray" subtitle="UE game folder optimizer · v0.5.0" />
+      <TitleBar title="shrinkray" subtitle="UE game folder optimizer · v0.6.1" />
       {folderDialogOpen && (
         <OpenDialog
           mode="folder"
@@ -528,7 +528,7 @@ export default function App() {
 
       <AssetInspector />
 
-      <MipStripPanel />
+      <MipStripPanel folderPath={path} backupLoaded={!!backup} previewOnly={previewOnly} />
 
       {backup && (
         <section className="report backup-card">
