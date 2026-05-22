@@ -1,14 +1,13 @@
-//! v0.6.1 end-to-end test: copy Pamali into a tempdir, ensure a backup,
-//! run the full apply pipeline (sidecar IPC → bytes → repak rewrite → backup
-//! manifest entry).
+//! v0.6.2 end-to-end test: copy Pamali into a tempdir, ensure a backup,
+//! run the full apply pipeline (sidecar IPC → bytes → patched-repak rewrite
+//! → backup manifest entry), assert the pak shrinks on disk, then assert
+//! `Backup::restore()` reverts it byte-exact.
 //!
-//! Pamali specifically trips the v0.6.1 inflation gate: repak's `flate2::
-//! Compression::fast()` (zlib level 1) re-emits Pamali's level-9-cooked
-//! entries ~13% larger, so even with a 20 MB mip drop the rewrite is bigger
-//! than the original. The pipeline detects this and refuses to touch the
-//! original pak — we assert that bail behaviour here (it's the load-bearing
-//! safety property of v0.6.1). v0.6.2 will patch repak's compression level
-//! and this test flips to assert real shrinkage instead.
+//! v0.6.1 history: this test originally asserted the inflation gate tripped
+//! because upstream repak compressed at zlib level 1 and bloated Pamali's
+//! level-9-cooked entries ~13%. v0.6.2 vendors a patched repak that uses
+//! `Compression::best()`, landing Pamali rewrites at modest net shrinkage
+//! (13 MB net on the T_hairMask03 strip).
 //!
 //! Gated on the Pamali pak being present at the documented local fixture
 //! path (`SHRINKRAY_PAMALI_PAK` env override). Skips cleanly on CI / fresh
@@ -48,7 +47,7 @@ fn sidecar_or_skip() -> Option<Sidecar> {
 }
 
 #[test]
-fn pamali_end_to_end_trips_inflation_gate_and_preserves_pak() {
+fn pamali_end_to_end_rewrites_pak_smaller_and_restores_byte_exact() {
     let Some(real_pak) = pamali_pak_or_skip() else { return };
     let Some(mut sidecar) = sidecar_or_skip() else { return };
 
@@ -61,6 +60,7 @@ fn pamali_end_to_end_trips_inflation_gate_and_preserves_pak() {
     let pak_copy = pak_dir.join("pakchunk0-WindowsNoEditor.pak");
     std::fs::copy(&real_pak, &pak_copy).expect("copy pamali pak");
     let original_bytes = std::fs::read(&pak_copy).expect("read copied pak");
+    let original_size = original_bytes.len() as u64;
 
     // Initialise a fresh backup — apply gate requires it.
     Backup::new(&folder, BackupMode::Differential).expect("backup init");
@@ -72,7 +72,7 @@ fn pamali_end_to_end_trips_inflation_gate_and_preserves_pak() {
         max_dim: 1024,
     }];
 
-    let err = apply_strip_mips_to_folder_impl(
+    let report = apply_strip_mips_to_folder_impl(
         &mut sidecar,
         &folder.to_string_lossy(),
         &pak_copy.to_string_lossy(),
@@ -80,33 +80,50 @@ fn pamali_end_to_end_trips_inflation_gate_and_preserves_pak() {
         Some("GAME_UE4_22"),
         Some("VER_UE4_22"),
     )
-    .expect_err("Pamali should trip the v0.6.1 inflation gate");
+    .expect("apply ok with v0.6.2 patched repak");
 
-    let msg = err.to_string();
+    // One texture applied, none skipped.
+    assert_eq!(report.skipped.len(), 0, "skipped: {:?}", report.skipped);
+    assert_eq!(report.applied.len(), 1);
+    let a = &report.applied[0];
+    assert_eq!(a.original_top_dim, 4096);
+    assert_eq!(a.stripped_top_dim, 1024);
+    assert_eq!(a.drop_mip_count, 2);
+    assert_eq!(a.kept_mip_count, 11);
+    assert_eq!(a.saved_bytes, 20_971_520, "exact 20 MB mip-drop savings");
+    assert_eq!(a.pixel_format, "PF_DXT5");
+
+    // Pak on disk got smaller. v0.6.2's level-9 zlib lands ~1.5% behind UE's
+    // cook on Pamali, so net shrinkage is mip-drop − compression-overhead.
+    // Observed empirically: ~13 MB net on a single texture strip.
+    assert_eq!(report.original_size, original_size);
     assert!(
-        msg.contains("inflate"),
-        "expected inflation diagnostic, got: {msg}",
+        report.new_size < report.original_size,
+        "pak should shrink: original={} new={}",
+        report.original_size, report.new_size,
+    );
+    let net_savings = report.original_size - report.new_size;
+    assert!(
+        net_savings >= 8_000_000,
+        "expected at least 8 MB net pak shrinkage on Pamali T_hairMask03; got {net_savings} bytes (orig={} new={})",
+        report.original_size, report.new_size,
     );
 
-    // The original pak on disk is preserved byte-exact (load-bearing safety).
+    // Backup manifest carries the strip metadata for the v0.7 AI re-expand path.
+    let backup_loaded = Backup::load(&folder).expect("backup reload");
+    assert_eq!(backup_loaded.entries().len(), 1);
+    let entry = &backup_loaded.entries()[0];
+    assert_eq!(entry.texture_strips.len(), 1);
+    assert_eq!(entry.texture_strips[0].original_top_dim, 4096);
+    assert_eq!(entry.texture_strips[0].stripped_top_dim, 1024);
+    assert_eq!(entry.texture_strips[0].pixel_format, "PF_DXT5");
+
+    // Restore reverts byte-exact via the saved pak payload.
+    let restore = backup_loaded.restore().expect("restore");
+    assert!(restore.failures.is_empty(), "restore failures: {:?}", restore.failures);
     assert_eq!(
         std::fs::read(&pak_copy).expect("re-read pak"),
         original_bytes,
-        "inflation gate must not touch the original pak",
-    );
-
-    // No partial manifest entry — backup is still empty.
-    let backup_loaded = Backup::load(&folder).expect("backup reload");
-    assert_eq!(
-        backup_loaded.entries().len(),
-        0,
-        "no manifest entry should be recorded on a gated failure",
-    );
-
-    // No leftover temp file.
-    let tmp_pak = pak_copy.with_extension("pak.shrinkray-tmp");
-    assert!(
-        !tmp_pak.exists(),
-        "temp pak file leaked: {}", tmp_pak.display(),
+        "restored pak must match original byte-for-byte",
     );
 }

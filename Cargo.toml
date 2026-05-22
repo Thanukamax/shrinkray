@@ -7,9 +7,14 @@ members = [
     "crates/shrinkray-sidecar",
     "src-tauri",
 ]
+# external/repak is a vendored submodule with its own workspace — don't
+# let cargo absorb its members (repak_cli, oodle_loader) into ours. The
+# patch override below pulls in just the `repak` crate via cargo's
+# dependency graph.
+exclude = ["external/repak"]
 
 [workspace.package]
-version = "0.6.1"
+version = "0.6.2"
 edition = "2021"
 rust-version = "1.77"
 license-file = "LICENSE"
@@ -31,6 +36,14 @@ repak = { git = "https://github.com/trumank/repak", rev = "e215472c51db69328b1ce
 shrinkray-core = { path = "crates/shrinkray-core" }
 shrinkray-audit = { path = "crates/shrinkray-audit" }
 shrinkray-sidecar = { path = "crates/shrinkray-sidecar" }
+
+# v0.6.2: redirect repak to a locally-patched fork (submodule at external/repak)
+# that bumps zlib/gzip from `Compression::fast()` (level 1) → `Compression::best()`
+# (level 9). Upstream's level-1 bloats Pamali-class rewrites ~13% past the
+# original UE-cooked pak size; level-9 lands at size parity. See
+# external/repak/repak/src/data.rs (shrinkray-patch comment).
+[patch."https://github.com/trumank/repak"]
+repak = { path = "external/repak/repak" }
 
 [profile.dev]
 incremental = true

@@ -2614,7 +2614,6 @@ checksum = "dc897dd8d9e8bd1ed8cdad82b5966c3e0ecae09fb1907d58efaa013543185d0a"
 [[package]]
 name = "repak"
 version = "0.2.3"
-source = "git+https://github.com/trumank/repak?rev=e215472c51db69328b1ce77be2db24d24c1d646b#e215472c51db69328b1ce77be2db24d24c1d646b"
 dependencies = [
  "aes",
  "byteorder",
@@ -3002,7 +3001,7 @@ checksum = "0fda2ff0d084019ba4d7c6f371c95d8fd75ce3524c3cb8fb653a3023f6323e64"
 
 [[package]]
 name = "shrinkray-audit"
-version = "0.6.1"
+version = "0.6.2"
 dependencies = [
  "anyhow",
  "serde",
@@ -3016,7 +3015,7 @@ dependencies = [
 
 [[package]]
 name = "shrinkray-cli"
-version = "0.6.1"
+version = "0.6.2"
 dependencies = [
  "anyhow",
  "clap",
@@ -3028,7 +3027,7 @@ dependencies = [
 
 [[package]]
 name = "shrinkray-core"
-version = "0.6.1"
+version = "0.6.2"
 dependencies = [
  "anyhow",
  "repak",
@@ -3042,7 +3041,7 @@ dependencies = [
 
 [[package]]
 name = "shrinkray-sidecar"
-version = "0.6.1"
+version = "0.6.2"
 dependencies = [
  "anyhow",
  "repak",
@@ -3054,7 +3053,7 @@ dependencies = [
 
 [[package]]
 name = "shrinkray-tauri"
-version = "0.6.1"
+version = "0.6.2"
 dependencies = [
  "anyhow",
  "base64 0.22.1",

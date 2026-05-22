@@ -1,0 +1,23 @@
+[workspace]
+resolver = "2"
+members = ["repak", "repak_cli"]
+
+[workspace.package]
+repository = "https://github.com/trumank/repak"
+authors = ["spuds", "trumank"]
+license = "MIT OR Apache-2.0"
+version = "0.2.3"
+edition = "2021"
+keywords = ["unreal-engine", "pak", "unrealpak"]
+
+[workspace.dependencies]
+aes = "0.8.4"
+base64 = "0.22.1"
+strum = { version = "0.27", features = ["derive"] }
+sha1 = "0.10"
+hex = "0.4"
+
+# The profile that 'cargo dist' will build with
+[profile.dist]
+inherits = "release"
+lto = "thin"

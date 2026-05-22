@@ -179,17 +179,16 @@ pub fn apply_to_pak(
         .with_context(|| format!("read {}", tmp_path.display()))?;
     let new_size = new_bytes.len() as u64;
 
-    // Inflation gate. repak's zlib encoder uses `flate2::Compression::fast()`
-    // (level 1), while UE's cook typically uses level 9. On heavily-compressed
-    // paks the level mismatch can bloat the rewrite past the original even
-    // after dropping top mips. Bail rather than silently growing the pak on
-    // disk — caller surfaces the structured error to the UI. v0.6.2's planned
-    // repak-compression-level fork lifts this gate.
+    // Inflation safety gate. v0.6.2 vendors a patched repak that uses
+    // `Compression::best()` so most cooked UE paks shrink correctly, but we
+    // keep the gate as a belt-and-braces check: if a future repak update or
+    // an edge-case pak layout produces a larger rewrite anyway, we'd rather
+    // fail loudly than silently grow the user's game folder.
     if new_size > original_size {
         let _ = fs::remove_file(&tmp_path);
         anyhow::bail!(
-            "rewrite would inflate pak from {} → {} bytes (compression-level mismatch with original cook; v0.6.1 limitation). \
-             Aborted before touching the original pak; v0.6.2 will patch repak to use higher zlib levels.",
+            "rewrite would inflate pak from {} → {} bytes — aborted before touching the original pak. \
+             This is unexpected with v0.6.2's patched repak; please report the pak + targets.",
             original_size,
             new_size,
         );

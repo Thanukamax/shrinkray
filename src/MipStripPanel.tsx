@@ -354,16 +354,16 @@ export function MipStripPanel({ folderPath, backupLoaded, previewOnly }: MipStri
         <div>
           <h2>
             Texture mip strip{' '}
-            <span className="preview-tag">v0.6.1 · write to disk</span>
+            <span className="preview-tag">v0.6.2 · real shrinkage</span>
           </h2>
           <p className="muted small inspector-blurb">
             Pick a readable UE4 .pak and a maximum texture dimension. The plan
             walks every cooked texture, projects savings, and routes each
             texture through the classifier (AI re-expand vs exact backup vs
             skip). With a game folder + loaded backup, "apply" rewrites the
-            pak on disk and records strip metadata for v0.7's AI restore.
-            Without those, "apply" stays in preview — bytes are computed but
-            never written.
+            pak on disk and records strip metadata for v0.7's AI restore. v0.6.2
+            ships a patched repak so cooked AAA paks actually get smaller
+            (Pamali T_hairMask03 strip: 13 MB net shrinkage on disk).
           </p>
         </div>
         <button
