@@ -26,3 +26,8 @@ sidecar/**/publish/
 
 # Bundled sidecar binaries (regenerated via scripts/build-sidecar.sh)
 src-tauri/binaries/
+
+# Δ-Codec paper bench corpus — regenerated via scripts/fetch-pbr-corpus.sh
+# and `cargo run --example gen_synthetic_corpus`. ~140 MB of CC0 / synthetic
+# textures; the derived CSVs in paper/results/ are what we actually track.
+paper/corpus/
