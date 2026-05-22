@@ -692,7 +692,6 @@ export function MipStripPanel({ folderPath, backupLoaded, previewOnly }: MipStri
           )}
 
           {plan.items.length > 0 ? (
-            <div className="mipstrip-overflow">
             <table className="inspector-table mipstrip-items">
               <thead>
                 <tr>
@@ -730,7 +729,6 @@ export function MipStripPanel({ folderPath, backupLoaded, previewOnly }: MipStri
                 })}
               </tbody>
             </table>
-            </div>
           ) : (
             <p className="muted small">
               No textures in this pak exceed the {maxDim}px cap — nothing to

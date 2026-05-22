@@ -77,7 +77,7 @@ export function DeltaCodecPanel() {
         RGBA. Industry says you pick one of "lossy-small" or "byte-exact." We're testing whether
         you can have both.
       </p>
-      <div className="actions">
+      <div className="actions" style={{ display: 'flex', gap: '0.6rem', marginTop: '0.6rem' }}>
         <button onClick={runSynthetic} disabled={pending}>
           {pending ? 'running…' : 'run synthetic bench'}
         </button>
@@ -86,17 +86,20 @@ export function DeltaCodecPanel() {
         </button>
       </div>
 
-      {err && <p className="err small">{err}</p>}
+      {err && (
+        <p className="err small" style={{ marginTop: '0.6rem' }}>
+          {err}
+        </p>
+      )}
 
       {result && (
-        <div className="delta-codec-result">
+        <div style={{ marginTop: '0.9rem' }}>
           {lastLabel && (
-            <p className="muted small">
-              Sample: <span className="delta-codec-sample-label">{lastLabel}</span> · spec{' '}
-              {result.spec_version}
+            <p className="muted small" style={{ marginBottom: '0.4rem' }}>
+              Sample: <span style={{ color: '#cfe' }}>{lastLabel}</span> · spec {result.spec_version}
             </p>
           )}
-          <div className="mipstrip-overflow">
+          <div style={{ overflowX: 'auto' }}>
             <table className="delta-codec-table">
               <thead>
                 <tr>
@@ -115,17 +118,26 @@ export function DeltaCodecPanel() {
                 {result.rows.map((r, i) => (
                   <tr key={i} className={r.quant_step === 1 ? 'lossless-row' : 'lossy-row'}>
                     <td>{r.sample}</td>
-                    <td className="num">{r.quant_step}</td>
-                    <td className="num">{fmtBytes(r.top_mip_bytes)}</td>
-                    <td className="num">{fmtBytes(r.low_mip_bytes)}</td>
-                    <td className="num">{fmtBytes(r.residual_zst_bytes)}</td>
-                    <td className="num">{fmtBytes(r.delta_total_bytes)}</td>
-                    <td className={`ratio ${r.ratio < 1.0 ? 'ratio-win' : 'ratio-loss'}`}>
+                    <td style={{ textAlign: 'right' }}>{r.quant_step}</td>
+                    <td style={{ textAlign: 'right' }}>{fmtBytes(r.top_mip_bytes)}</td>
+                    <td style={{ textAlign: 'right' }}>{fmtBytes(r.low_mip_bytes)}</td>
+                    <td style={{ textAlign: 'right' }}>{fmtBytes(r.residual_zst_bytes)}</td>
+                    <td style={{ textAlign: 'right' }}>{fmtBytes(r.delta_total_bytes)}</td>
+                    <td
+                      style={{
+                        textAlign: 'right',
+                        color: r.ratio < 1.0 ? '#9efc8c' : '#ffb14e',
+                        fontWeight: 600,
+                      }}
+                    >
                       {r.ratio.toFixed(2)}×
                     </td>
-                    <td className="num">{r.max_channel_error}</td>
+                    <td style={{ textAlign: 'right' }}>{r.max_channel_error}</td>
                     <td
-                      className={`byte-exact-cell ${r.byte_exact ? 'byte-exact-yes' : 'byte-exact-no'}`}
+                      style={{
+                        textAlign: 'center',
+                        color: r.byte_exact ? '#9efc8c' : '#888',
+                      }}
                     >
                       {r.byte_exact ? 'YES' : '—'}
                     </td>
@@ -134,9 +146,9 @@ export function DeltaCodecPanel() {
               </tbody>
             </table>
           </div>
-          <p className="muted small">
+          <p className="muted small" style={{ marginTop: '0.6rem' }}>
             {result.lossless_runs} byte-exact run(s) · best ratio{' '}
-            <span className="delta-codec-summary-ratio">
+            <span style={{ color: '#9efc8c', fontWeight: 600 }}>
               {result.best_lossless_ratio.toFixed(2)}×
             </span>{' '}
             of the ExactBackup baseline. q=1 is lossless; q=2/4 trade bounded error for further

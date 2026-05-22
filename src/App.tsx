@@ -592,13 +592,23 @@ export default function App() {
           </table>
 
           {deltaCodecProjection && deltaCodecProjection.texture_count > 0 && (
-            <div className="delta-projection">
-              <p className="delta-projection-title">Δ-Codec projection</p>
-              <p className="muted small">
+            <div
+              style={{
+                marginTop: '0.9rem',
+                padding: '0.7rem 0.9rem',
+                background: 'rgba(64, 200, 140, 0.08)',
+                border: '1px solid rgba(120, 220, 160, 0.3)',
+                borderRadius: '4px',
+              }}
+            >
+              <p style={{ margin: 0, fontWeight: 600, color: '#9efc8c' }}>
+                Δ-Codec projection
+              </p>
+              <p className="muted small" style={{ marginTop: '0.3rem' }}>
                 Same backup, encoded via Δ-Codec sidecar instead of full bytes. Bench-validated
                 per-class ratios (see <code>docs/delta-codec-spec.md</code>).
               </p>
-              <table>
+              <table style={{ marginTop: '0.5rem' }}>
                 <tbody>
                   <Row
                     label="current backup"
@@ -619,26 +629,31 @@ export default function App() {
                 </tbody>
               </table>
               {deltaCodecProjection.class_breakdown.length > 0 && (
-                <details>
+                <details style={{ marginTop: '0.5rem' }}>
                   <summary className="muted small">per-class breakdown</summary>
-                  <table className="breakdown-table">
+                  <table style={{ marginTop: '0.4rem' }}>
                     <thead>
                       <tr>
-                        <th>compression</th>
-                        <th>count</th>
-                        <th>baseline</th>
-                        <th>Δ-projected</th>
-                        <th>ratio</th>
+                        <th style={{ textAlign: 'left' }}>compression</th>
+                        <th style={{ textAlign: 'right' }}>count</th>
+                        <th style={{ textAlign: 'right' }}>baseline</th>
+                        <th style={{ textAlign: 'right' }}>Δ-projected</th>
+                        <th style={{ textAlign: 'right' }}>ratio</th>
                       </tr>
                     </thead>
                     <tbody>
                       {deltaCodecProjection.class_breakdown.map((c) => (
                         <tr key={c.compression_settings}>
                           <td>{c.compression_settings}</td>
-                          <td>{c.texture_count}</td>
-                          <td>{formatBytes(c.baseline_bytes)}</td>
-                          <td>{formatBytes(c.projected_bytes)}</td>
-                          <td className={c.ratio < 1.0 ? 'ratio-win' : 'ratio-loss'}>
+                          <td style={{ textAlign: 'right' }}>{c.texture_count}</td>
+                          <td style={{ textAlign: 'right' }}>{formatBytes(c.baseline_bytes)}</td>
+                          <td style={{ textAlign: 'right' }}>{formatBytes(c.projected_bytes)}</td>
+                          <td
+                            style={{
+                              textAlign: 'right',
+                              color: c.ratio < 1.0 ? '#9efc8c' : '#ffb14e',
+                            }}
+                          >
                             {c.ratio.toFixed(2)}×
                           </td>
                         </tr>

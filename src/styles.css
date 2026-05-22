@@ -28,9 +28,7 @@ html, body, #root {
   margin: 0;
   padding: 0;
   height: 100%;
-  /* v0.7.4 — bumped from 9pt → 10.5pt to match Win7 native scale. Everything
-   * downstream is em-based, so this rescales the whole UI proportionally. */
-  font: 10.5pt 'Segoe UI', 'SegoeUI', 'Noto Sans', sans-serif;
+  font: 9pt 'Segoe UI', 'SegoeUI', 'Noto Sans', sans-serif;
   color: #000;
 }
 
@@ -81,11 +79,8 @@ body {
 .layout {
   display: flex;
   flex-direction: column;
-  gap: 14px;
-  padding: 14px 18px 24px;
-  max-width: 1400px;
-  margin: 0 auto;
-  width: 100%;
+  gap: 12px;
+  padding: 12px 14px 20px;
 }
 
 /* Wizard-intro band right under the title bar. */
@@ -106,17 +101,15 @@ body {
   color: #1a3a6b;
 }
 
-/* Mode badge — Aero status pill. v0.7.4: bigger so an operator can't miss
- * which mode they're in. WRITE mode is a solid red fill with white text —
- * impossible to confuse with PREVIEW. */
+/* Mode badge — Aero status pill. */
 .mode-badge {
-  padding: 4px 14px;
-  border-radius: 10px;
-  font-size: 0.9em;
+  padding: 2px 10px;
+  border-radius: 9px;
+  font-size: 0.78em;
   font-weight: 600;
   letter-spacing: 0;
   text-transform: none;
-  box-shadow: inset 0 1px 0 rgba(255,255,255,0.7), 0 1px 1px rgba(0,0,0,0.05);
+  box-shadow: inset 0 1px 0 rgba(255,255,255,0.7);
   white-space: nowrap;
 }
 .mode-badge.mode-preview {
@@ -125,13 +118,9 @@ body {
   border: 1px solid var(--sr-ok-border);
 }
 .mode-badge.mode-write {
-  background: linear-gradient(180deg, #d33 0%, #a01010 100%);
-  color: #fff;
-  border: 1px solid #7a0a0a;
-  box-shadow:
-    inset 0 1px 0 rgba(255,255,255,0.3),
-    0 1px 1px rgba(0,0,0,0.1);
-  text-shadow: 0 1px 0 rgba(0,0,0,0.35);
+  background: var(--sr-err-soft);
+  color: var(--sr-err);
+  border: 1px solid var(--sr-err-border);
 }
 
 /* Folder picker / drop zone. */
@@ -160,15 +149,7 @@ body {
   white-space: nowrap;
   margin: 0;
 }
-.actions { display: flex; gap: 8px; flex-wrap: wrap; }
-/* v0.7.4 — bump 7.css buttons to Win7 native chunkiness. 7.css ships small
- * dialog-button proportions; native Win7 controls are about 24px tall. */
-.actions button,
-button.primary {
-  min-height: 26px;
-  padding: 4px 14px;
-  font-size: 0.95em;
-}
+.actions { display: flex; gap: 6px; flex-wrap: wrap; }
 .preview-toggle {
   display: inline-flex;
   align-items: center;
@@ -181,44 +162,15 @@ button.primary {
 }
 
 /* Group-box .report sections — match 7.css fieldset look but accept multiple
- * h2s inside (existing markup has subsection h2s within one card).
- *
- * v0.7.4 — Aero glass on panels: subtle blur + frosted gradient + slightly
- * more pronounced shadow so each section feels like a Win7 Explorer pane. */
+ * h2s inside (existing markup has subsection h2s within one card). */
 .report {
-  background: linear-gradient(180deg, rgba(255,255,255,0.98) 0%, rgba(247,250,253,0.96) 100%);
-  border: 1px solid #b8c8db;
-  border-radius: 4px;
-  padding: 16px 18px;
-  box-shadow:
-    inset 0 1px 0 rgba(255,255,255,0.95),
-    inset 0 0 0 1px rgba(255,255,255,0.6),
-    0 1px 3px rgba(0,0,0,0.08),
-    0 2px 6px rgba(20,40,90,0.04);
+  background: #fff;
+  border: 1px solid #cdd7db;
+  border-radius: 3px;
+  padding: 12px 14px;
+  box-shadow: inset 0 0 0 1px #fff, 0 1px 2px rgba(0,0,0,0.04);
   margin: 0;
-  backdrop-filter: blur(2px);
 }
-/* v0.7.4 — Win7-style blue gradient h2 for the FIRST h2 in a panel.
- * Bleeds to panel edges so it reads as a true Explorer-style header bar.
- * Nested/subsequent h2 inside the same .report use the flat treatment
- * below — otherwise every sub-section would look like a new panel. */
-.report > h2:first-child {
-  font-size: 1.15em;
-  font-weight: 600;
-  letter-spacing: 0;
-  text-transform: none;
-  color: #15428b;
-  padding: 7px 12px;
-  margin: -16px -18px 12px;
-  border-bottom: 1px solid #95b0d0;
-  background: linear-gradient(180deg, #f0f6fc 0%, #dce8f5 48%, #c8d9ec 52%, #d8e6f4 100%);
-  border-top-left-radius: 3px;
-  border-top-right-radius: 3px;
-  box-shadow: inset 0 1px 0 rgba(255,255,255,0.95);
-  text-shadow: 0 1px 0 rgba(255,255,255,0.7);
-}
-/* Nested / non-first-child h2 — flat treatment so it reads as a sub-section,
- * not a new panel. Keeps the v0.7.3 look for those. */
 .report h2 {
   font-size: 1em;
   font-weight: 600;
@@ -958,132 +910,3 @@ tr.dropping td { color: #1a1a1a; }
   margin-top: 6px;
 }
 .od-buttons button { min-width: 88px; }
-
-/* ====================================================================
- * v0.7.4 — Δ-Codec table + Backup projection panel + mip strip overflow.
- * Replaces inline neon-green styles in DeltaCodecPanel.tsx and the
- * Backup projection block in App.tsx with Aero-token classes.
- * ==================================================================== */
-
-/* Δ-Codec result table — tighter rows, tabular numbers, accent on
- * lossless rows so they pop as the demo highlight. */
-.delta-codec-table {
-  width: 100%;
-  border-collapse: collapse;
-  font-size: 0.9em;
-  font-variant-numeric: tabular-nums;
-}
-.delta-codec-table thead th {
-  text-align: left;
-  color: #585858;
-  font-weight: 400;
-  padding: 5px 8px 5px 0;
-  border-bottom: 1px dotted #95b0d0;
-  background: linear-gradient(180deg, #f6f9fc 0%, #e8eef6 100%);
-}
-.delta-codec-table tbody td {
-  padding: 4px 8px 4px 0;
-  border-bottom: 1px dotted #d8d8d8;
-}
-.delta-codec-table tr.lossless-row {
-  background: linear-gradient(180deg, var(--sr-ok-soft) 0%, #f3faec 100%);
-}
-.delta-codec-table tr.lossless-row td {
-  border-bottom-color: #c5dac9;
-}
-.delta-codec-table tr.lossy-row {
-  background: #fff;
-}
-.delta-codec-table td.num {
-  text-align: right;
-}
-/* Ratio cell — green when < 1.0 (better than backup), orange otherwise. */
-.delta-codec-table td.ratio {
-  text-align: right;
-  font-weight: 600;
-}
-.delta-codec-table td.ratio.ratio-win { color: var(--sr-ok); }
-.delta-codec-table td.ratio.ratio-loss { color: var(--sr-warn); }
-.delta-codec-table td.byte-exact-cell {
-  text-align: center;
-  font-weight: 600;
-}
-.delta-codec-table td.byte-exact-cell.byte-exact-yes {
-  color: var(--sr-ok);
-}
-.delta-codec-table td.byte-exact-cell.byte-exact-no {
-  color: #888;
-}
-.delta-codec-sample-label {
-  color: var(--sr-orange);
-  font-weight: 600;
-}
-.delta-codec-summary-ratio {
-  color: var(--sr-ok);
-  font-weight: 600;
-}
-
-/* Δ-Codec projection block inside the Backup card. */
-.delta-projection {
-  margin-top: 12px;
-  padding: 10px 14px 12px;
-  background: linear-gradient(180deg, var(--sr-ok-soft) 0%, #f3faec 100%);
-  border: 1px solid var(--sr-ok-border);
-  border-radius: 3px;
-  box-shadow: inset 0 1px 0 rgba(255,255,255,0.7);
-}
-.delta-projection-title {
-  margin: 0;
-  font-weight: 600;
-  color: var(--sr-ok);
-  font-size: 1.02em;
-}
-.delta-projection table { width: 100%; border-collapse: collapse; }
-.delta-projection table td {
-  padding: 3px 0;
-  border-bottom: 1px dotted #c5dac9;
-}
-.delta-projection details summary {
-  color: #2a6e2a;
-  font-size: 0.9em;
-  padding: 4px 0;
-}
-.delta-projection .breakdown-table {
-  width: 100%;
-  border-collapse: collapse;
-  margin-top: 4px;
-  font-size: 0.88em;
-  font-variant-numeric: tabular-nums;
-}
-.delta-projection .breakdown-table th {
-  color: #585858;
-  font-weight: 400;
-  padding: 3px 6px 3px 0;
-  border-bottom: 1px dotted #c5dac9;
-}
-.delta-projection .breakdown-table td {
-  padding: 3px 6px 3px 0;
-  border-bottom: 1px dotted #e1ece4;
-}
-.delta-projection .breakdown-table td.ratio-win { color: var(--sr-ok); font-weight: 600; }
-.delta-projection .breakdown-table td.ratio-loss { color: var(--sr-warn); font-weight: 600; }
-
-/* Mip strip plan table — wrap in horizontal scroll instead of letting the
- * 8-column table wrap text within cells. Single-line rows scan faster. */
-.mipstrip-overflow {
-  overflow-x: auto;
-  margin: 0 -2px;  /* Aero panels have inset 1px shadow; minor bleed for visual breathing */
-}
-.mipstrip-items {
-  min-width: 760px;
-  font-variant-numeric: tabular-nums;
-}
-.mipstrip-items td,
-.mipstrip-items th {
-  white-space: nowrap;
-}
-.mipstrip-items td.path-small {
-  max-width: 28ch;
-  overflow: hidden;
-  text-overflow: ellipsis;
-}
