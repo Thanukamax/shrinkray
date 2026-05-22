@@ -10,6 +10,15 @@ namespace Shrinkray.Sidecar;
 //   { "id": "2", "ok": true, "result": { "entries": [...] } }
 //   { "id": "2", "ok": false, "error": "..." }
 // One JSON object per line. EOF on stdin = exit.
+//
+// v0.7.2: a handler MAY also emit 0..N intermediate progress lines before the
+// final response. These look like:
+//   { "id": "2", "progress": { "current": 5, "total": 200, ... } }
+// and are written via ProgressEmitter.Emit(payload) from inside the handler.
+// The terminal response (with the `ok` field) is still required and arrives
+// after all progress messages — clients distinguish by presence of `progress`
+// vs `ok` per line. Backward compatible: clients that ignore `progress` lines
+// keep working with no protocol break.
 public static class Program
 {
     public const string SidecarVersion = "0.1.0";
@@ -38,15 +47,29 @@ public static class Program
         {
             if (string.IsNullOrWhiteSpace(line)) continue;
             string responseJson;
+            string? capturedId = null;
             try
             {
                 var request = JsonSerializer.Deserialize<Request>(line, JsonOpts.Reader)
                     ?? throw new InvalidOperationException("null request");
-                responseJson = await Dispatch(request);
+                capturedId = request.Id;
+                // Bind the per-request progress emitter for the duration of
+                // Dispatch. Sidecar is single-threaded (one request at a
+                // time), so a static-field context is enough — no AsyncLocal.
+                ProgressEmitter.Bind(stdout, request.Id);
+                try
+                {
+                    responseJson = await Dispatch(request);
+                }
+                finally
+                {
+                    ProgressEmitter.Unbind();
+                }
             }
             catch (Exception ex)
             {
-                var err = new Response { Id = null, Ok = false, Error = $"protocol error: {ex.Message}" };
+                ProgressEmitter.Unbind();
+                var err = new Response { Id = capturedId, Ok = false, Error = $"protocol error: {ex.Message}" };
                 responseJson = JsonSerializer.Serialize(err, JsonOpts.Writer);
             }
             await stdout.WriteLineAsync(responseJson);
@@ -269,6 +292,60 @@ public sealed class Response
     [JsonPropertyName("ok")] public bool Ok { get; set; }
     [JsonPropertyName("result")] public object? Result { get; set; }
     [JsonPropertyName("error")] public string? Error { get; set; }
+}
+
+public sealed class ProgressMessage
+{
+    [JsonPropertyName("id")] public string? Id { get; set; }
+    [JsonPropertyName("progress")] public object? Progress { get; set; }
+}
+
+/// <summary>
+/// Per-request progress emitter. <see cref="Program.Main"/> binds the current
+/// stdout + request id before dispatching a handler; handlers call
+/// <see cref="Emit"/> any number of times to write intermediate progress lines
+/// alongside the eventual response. The Rust client parses progress lines
+/// separately from the terminal response by checking for the `progress` field
+/// vs the `ok` field (see <c>shrinkray-sidecar::Sidecar::call_with_progress</c>).
+///
+/// Thread-safe: a handler may emit progress from worker threads via
+/// <see cref="Parallel.ForEach"/>; the internal lock keeps WriteLine + Flush
+/// from interleaving bytes between threads. Without the lock concurrent calls
+/// can corrupt the JSON stream and the Rust client's line-based parser fails.
+/// </summary>
+public static class ProgressEmitter
+{
+    private static TextWriter? _stdout;
+    private static string? _requestId;
+    private static readonly object _writeLock = new();
+
+    internal static void Bind(TextWriter stdout, string? requestId)
+    {
+        _stdout = stdout;
+        _requestId = requestId;
+    }
+
+    internal static void Unbind()
+    {
+        _stdout = null;
+        _requestId = null;
+    }
+
+    public static void Emit(object payload)
+    {
+        var stdout = _stdout;
+        if (stdout is null) return;
+        var msg = new ProgressMessage { Id = _requestId, Progress = payload };
+        var json = JsonSerializer.Serialize(msg, JsonOpts.Writer);
+        // WriteLine + Flush keep the client's read loop unblocked; without
+        // the flush stdout buffering can hold the message until the response.
+        // The lock prevents concurrent writers from interleaving bytes.
+        lock (_writeLock)
+        {
+            stdout.WriteLine(json);
+            stdout.Flush();
+        }
+    }
 }
 
 public sealed record PingResult(

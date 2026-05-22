@@ -14,7 +14,7 @@ members = [
 exclude = ["external/repak"]
 
 [workspace.package]
-version = "0.7.1"
+version = "0.7.2"
 edition = "2021"
 rust-version = "1.77"
 license-file = "LICENSE"

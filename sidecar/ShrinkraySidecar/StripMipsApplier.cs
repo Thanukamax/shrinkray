@@ -123,8 +123,11 @@ public static class StripMipsApplier
 
         try
         {
+            int idx = 0;
             foreach (var target in targets)
             {
+                idx++;
+                string status; string? reason = null; long savedBytes = 0;
                 try
                 {
                     var result = ApplyOne(provider, target, engineVer, tempRoot);
@@ -132,18 +135,46 @@ public static class StripMipsApplier
                     {
                         applied.Add(result.applied);
                         totalSaved += result.applied.SavedBytes;
+                        savedBytes = result.applied.SavedBytes;
+                        status = "applied";
                     }
                     else if (result.skipped is not null)
                     {
                         skipped.Add(result.skipped);
+                        status = "skipped";
+                        reason = result.skipped.Reason;
+                    }
+                    else
+                    {
+                        // ApplyOne returning (null, null) is a bug but we
+                        // surface it cleanly rather than throwing — keeps
+                        // the batch alive.
+                        status = "skipped";
+                        reason = "internal: ApplyOne returned no result";
+                        skipped.Add(new StripSkipped(target.AssetPath, reason));
                     }
                 }
                 catch (Exception ex)
                 {
                     Console.Error.WriteLine($"[apply_strip_mips] {target.AssetPath} failed: {ex.GetType().Name}: {ex.Message}");
                     Console.Error.WriteLine($"  stack: {ex.StackTrace?.Split('\n').FirstOrDefault()?.Trim()}");
-                    skipped.Add(new StripSkipped(target.AssetPath, $"{ex.GetType().Name}: {ex.Message}"));
+                    status = "skipped";
+                    reason = $"{ex.GetType().Name}: {ex.Message}";
+                    skipped.Add(new StripSkipped(target.AssetPath, reason));
                 }
+                // Emit one progress line per texture so the UI can render
+                // current/total + which asset is being processed. Cheap
+                // enough that a 200-texture batch produces ~200 small lines.
+                ProgressEmitter.Emit(new
+                {
+                    op = "apply_strip_mips",
+                    current = idx,
+                    total = targets.Count,
+                    asset_path = target.AssetPath,
+                    status,
+                    saved_bytes = savedBytes,
+                    reason,
+                });
             }
         }
         finally

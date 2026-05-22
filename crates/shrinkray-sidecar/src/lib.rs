@@ -112,6 +112,16 @@ pub struct InspectAssetResult {
     pub textures: Vec<TextureInfo>,
 }
 
+/// One mip level — width, height, on-disk bytes. v0.7.2: the planner returns
+/// the full mip array per texture so the frontend can re-project locally
+/// when the user changes max_dim, instead of round-tripping to the sidecar.
+#[derive(Debug, Deserialize, Serialize, Clone)]
+pub struct StripMipsLevel {
+    pub w: i32,
+    pub h: i32,
+    pub bytes: i64,
+}
+
 #[derive(Debug, Deserialize, Serialize, Clone)]
 pub struct StripMipsItem {
     pub asset_path: String,
@@ -130,6 +140,11 @@ pub struct StripMipsItem {
     /// uses name + pixel-format fallbacks.
     #[serde(default)]
     pub compression_settings: Option<String>,
+    /// v0.7.2: full mip pyramid for client-side re-projection on max_dim
+    /// changes. `#[serde(default)]` so old planner responses without this
+    /// field still deserialize (legacy paths fall back to a sidecar call).
+    #[serde(default)]
+    pub mips: Vec<StripMipsLevel>,
 }
 
 #[derive(Debug, Deserialize, Serialize, Clone)]
@@ -329,6 +344,25 @@ impl Sidecar {
         game: Option<&str>,
         engine_version: Option<&str>,
     ) -> Result<ApplyStripMipsResult> {
+        self.apply_strip_mips_with_progress(pak_path, targets, game, engine_version, |_| {})
+    }
+
+    /// v0.7.2: streamed-progress variant. `on_progress` fires once per
+    /// texture the sidecar finishes — payload shape matches
+    /// `ProgressEmitter.Emit(...)` in C# (`current`, `total`, `asset_path`,
+    /// `status`, `saved_bytes`, optional `reason`). UI uses it to render a
+    /// live counter + progress bar instead of the previous black-box "applying…".
+    pub fn apply_strip_mips_with_progress<F>(
+        &mut self,
+        pak_path: impl AsRef<Path>,
+        targets: &[StripTarget],
+        game: Option<&str>,
+        engine_version: Option<&str>,
+        on_progress: F,
+    ) -> Result<ApplyStripMipsResult>
+    where
+        F: FnMut(&Value),
+    {
         let mut args = serde_json::Map::new();
         args.insert(
             "pak_path".into(),
@@ -341,7 +375,11 @@ impl Sidecar {
         if let Some(ev) = engine_version {
             args.insert("engine_version".into(), Value::String(ev.into()));
         }
-        let result = self.call("apply_strip_mips", Some(Value::Object(args)))?;
+        let result = self.call_with_progress(
+            "apply_strip_mips",
+            Some(Value::Object(args)),
+            on_progress,
+        )?;
         Ok(serde_json::from_value(result)?)
     }
 
@@ -374,6 +412,24 @@ impl Sidecar {
     }
 
     fn call(&mut self, cmd: &str, args: Option<Value>) -> Result<Value> {
+        self.call_with_progress(cmd, args, |_| {})
+    }
+
+    /// v0.7.2: like [`Self::call`] but reads any number of intermediate
+    /// `{ id, progress: ... }` lines from stdout before the terminal
+    /// `{ id, ok, result/error }` line. `on_progress` is called once per
+    /// progress payload — Tauri commands hand it a closure that emits a
+    /// frontend event, tests hand it a noop, the no-arg [`Self::call`]
+    /// hands it a noop too so existing callers don't have to change.
+    pub fn call_with_progress<F>(
+        &mut self,
+        cmd: &str,
+        args: Option<Value>,
+        mut on_progress: F,
+    ) -> Result<Value>
+    where
+        F: FnMut(&Value),
+    {
         let id = self.next_id.fetch_add(1, Ordering::Relaxed);
         let req = Request { id: id.to_string(), cmd, args };
         let line = serde_json::to_string(&req)?;
@@ -381,20 +437,41 @@ impl Sidecar {
         self.stdin.write_all(b"\n")?;
         self.stdin.flush()?;
 
-        let mut buf = String::new();
-        let n = self.stdout.read_line(&mut buf)?;
-        if n == 0 {
-            bail!("sidecar closed stdout unexpectedly");
+        // Distinguish progress vs terminal-response lines by which key the
+        // sidecar populated. Progress lines carry `progress`; terminal lines
+        // carry `ok` (with `result` or `error`). We keep reading lines until
+        // we see the terminal one.
+        loop {
+            let mut buf = String::new();
+            let n = self.stdout.read_line(&mut buf)?;
+            if n == 0 {
+                bail!("sidecar closed stdout unexpectedly");
+            }
+            let trimmed = buf.trim_end();
+            // Cheap pre-parse: is this a progress line or a result line?
+            // Parsing as Value first avoids two `from_str` calls in the
+            // common case.
+            let v: Value = serde_json::from_str(trimmed)
+                .with_context(|| format!("malformed sidecar line: {buf}"))?;
+            if let Some(progress) = v.get("progress") {
+                on_progress(progress);
+                continue;
+            }
+            // Treat anything without a `progress` field as the terminal
+            // response. If `ok` is missing entirely we surface a clear error
+            // rather than panicking.
+            let resp: Response = serde_json::from_value(v)
+                .with_context(|| format!("malformed sidecar response: {buf}"))?;
+            if !resp.ok {
+                return Err(anyhow!(
+                    "sidecar error: {}",
+                    resp.error.unwrap_or_else(|| "<no error message>".into())
+                ));
+            }
+            return resp
+                .result
+                .ok_or_else(|| anyhow!("sidecar returned ok=true with no result"));
         }
-        let resp: Response = serde_json::from_str(buf.trim_end())
-            .with_context(|| format!("malformed sidecar response: {buf}"))?;
-        if !resp.ok {
-            return Err(anyhow!(
-                "sidecar error: {}",
-                resp.error.unwrap_or_else(|| "<no error message>".into())
-            ));
-        }
-        resp.result.ok_or_else(|| anyhow!("sidecar returned ok=true with no result"))
     }
 }
 

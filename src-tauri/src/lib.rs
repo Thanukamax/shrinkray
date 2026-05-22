@@ -4,6 +4,7 @@ use std::sync::Mutex;
 
 use anyhow::Context;
 use base64::prelude::{Engine as _, BASE64_STANDARD};
+use tauri::Emitter as _;
 use shrinkray_audit::AuditReport;
 use shrinkray_core::ai_restore::{plan_restore_ai, RestoreAiPlan};
 use shrinkray_core::classifier::{Policy, TextureFacts};
@@ -166,9 +167,31 @@ fn sidecar_plan_strip_mips(
     max_dim: i32,
     limit: Option<i32>,
     game: Option<String>,
+    app: tauri::AppHandle,
     state: tauri::State<SidecarHandle>,
 ) -> Result<PlanStripMipsResult, String> {
-    state.with(|s| s.plan_strip_mips(&pak_path, max_dim, limit, game.as_deref()))
+    state.with(|s| {
+        // The planner emits {op:"plan_strip_mips", current, total, asset_path}
+        // every 10 packages. Frontend listens on the same `strip-progress`
+        // channel and switches on `op` for the apply vs planner display.
+        let mut args = serde_json::Map::new();
+        args.insert("pak_path".into(), serde_json::Value::String(pak_path.clone()));
+        args.insert("max_dim".into(), serde_json::Value::Number(max_dim.into()));
+        if let Some(l) = limit {
+            args.insert("limit".into(), serde_json::Value::Number(l.into()));
+        }
+        if let Some(g) = game.as_deref() {
+            args.insert("game".into(), serde_json::Value::String(g.into()));
+        }
+        let result = s.call_with_progress(
+            "plan_strip_mips",
+            Some(serde_json::Value::Object(args)),
+            |progress| {
+                let _ = app.emit("strip-progress", progress);
+            },
+        )?;
+        Ok::<_, anyhow::Error>(serde_json::from_value(result)?)
+    })
 }
 
 /// v0.6.0-rc1 apply path. Takes the pak + a list of per-texture (asset_path,
@@ -182,9 +205,21 @@ fn sidecar_apply_strip_mips(
     targets: Vec<StripTarget>,
     game: Option<String>,
     engine_version: Option<String>,
+    app: tauri::AppHandle,
     state: tauri::State<SidecarHandle>,
 ) -> Result<ApplyStripMipsResult, String> {
-    state.with(|s| s.apply_strip_mips(&pak_path, &targets, game.as_deref(), engine_version.as_deref()))
+    state.with(|s| {
+        s.apply_strip_mips_with_progress(
+            &pak_path,
+            &targets,
+            game.as_deref(),
+            engine_version.as_deref(),
+            |progress| {
+                // Fire-and-forget — a frontend listen failure shouldn't fail the apply.
+                let _ = app.emit("strip-progress", progress);
+            },
+        )
+    })
 }
 
 /// v0.6.1: end-to-end mip strip applied to a pak on disk. Loads the backup
@@ -203,16 +238,20 @@ fn apply_strip_mips_to_folder(
     targets: Vec<StripTarget>,
     game: Option<String>,
     engine_version: Option<String>,
+    app: tauri::AppHandle,
     state: tauri::State<SidecarHandle>,
 ) -> Result<PakStripReport, String> {
     state.with(|s| {
-        apply_strip_mips_to_folder_impl(
+        apply_strip_mips_to_folder_impl_with_progress(
             s,
             &folder_path,
             &pak_path,
             &targets,
             game.as_deref(),
             engine_version.as_deref(),
+            |progress| {
+                let _ = app.emit("strip-progress", progress);
+            },
         )
     })
 }
@@ -228,6 +267,32 @@ pub fn apply_strip_mips_to_folder_impl(
     game: Option<&str>,
     engine_version: Option<&str>,
 ) -> anyhow::Result<PakStripReport> {
+    apply_strip_mips_to_folder_impl_with_progress(
+        sidecar,
+        folder_path,
+        pak_path,
+        targets,
+        game,
+        engine_version,
+        |_| {},
+    )
+}
+
+/// v0.7.2: streamed-progress variant used by the Tauri command. `on_progress`
+/// fires once per texture the sidecar finishes (apply_strip_mips emits one
+/// event per target before the terminal result).
+pub fn apply_strip_mips_to_folder_impl_with_progress<F>(
+    sidecar: &mut Sidecar,
+    folder_path: &str,
+    pak_path: &str,
+    targets: &[StripTarget],
+    game: Option<&str>,
+    engine_version: Option<&str>,
+    on_progress: F,
+) -> anyhow::Result<PakStripReport>
+where
+    F: FnMut(&serde_json::Value),
+{
     let root = PathBuf::from(folder_path);
     let mut b = backup::Backup::load(&root)
         .with_context(|| format!("backup required before apply_strip_mips_to_folder for {}", root.display()))?;
@@ -235,7 +300,13 @@ pub fn apply_strip_mips_to_folder_impl(
     if !pak.exists() {
         anyhow::bail!("pak not found: {}", pak.display());
     }
-    let sidecar_result = sidecar.apply_strip_mips(pak_path, targets, game, engine_version)?;
+    let sidecar_result = sidecar.apply_strip_mips_with_progress(
+        pak_path,
+        targets,
+        game,
+        engine_version,
+        on_progress,
+    )?;
 
     // Convert sidecar StripAppliedTexture → core AppliedTexture (base64 decode
     // the file payloads). Any decode failure aborts the whole run rather than

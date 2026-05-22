@@ -466,7 +466,7 @@ export default function App() {
 
   return (
     <div className="window app-shell active glass">
-      <TitleBar title="shrinkray" subtitle="UE game folder optimizer · v0.7.1" />
+      <TitleBar title="shrinkray" subtitle="UE game folder optimizer · v0.7.2" />
       {folderDialogOpen && (
         <OpenDialog
           mode="folder"
