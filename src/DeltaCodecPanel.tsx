@@ -1,9 +1,10 @@
-import { useState } from 'react'
+import { useState, type CSSProperties } from 'react'
 import { invoke } from '@tauri-apps/api/core'
 import { open } from '@tauri-apps/plugin-dialog'
 
 type Row = {
   sample: string
+  predictor: string
   quant_step: number
   top_mip_bytes: number
   low_mip_bytes: number
@@ -33,12 +34,13 @@ export function DeltaCodecPanel() {
   const [pending, setPending] = useState(false)
   const [err, setErr] = useState<string | null>(null)
   const [lastLabel, setLastLabel] = useState<string | null>(null)
+  const [downsample, setDownsample] = useState<2 | 4>(2)
 
   async function runSynthetic() {
     setPending(true)
     setErr(null)
     try {
-      const r = await invoke<BenchResult>('delta_codec_run_synthetic_bench')
+      const r = await invoke<BenchResult>('delta_codec_run_synthetic_bench', { downsample })
       setResult(r)
       setLastLabel('synthetic content classes')
     } catch (e: unknown) {
@@ -58,7 +60,7 @@ export function DeltaCodecPanel() {
     if (!picked || typeof picked !== 'string') return
     setPending(true)
     try {
-      const r = await invoke<BenchResult>('delta_codec_run_file_bench', { path: picked })
+      const r = await invoke<BenchResult>('delta_codec_run_file_bench', { path: picked, downsample })
       setResult(r)
       setLastLabel(picked.split('/').pop() ?? picked)
     } catch (e: unknown) {
@@ -67,6 +69,16 @@ export function DeltaCodecPanel() {
       setPending(false)
     }
   }
+
+  const segBtn = (active: boolean): CSSProperties => ({
+    padding: '0.3rem 0.6rem',
+    fontSize: '0.8rem',
+    cursor: pending ? 'default' : 'pointer',
+    border: '1px solid rgba(255,255,255,0.18)',
+    background: active ? 'rgba(120,180,255,0.22)' : 'transparent',
+    color: active ? '#cfe' : 'inherit',
+    fontWeight: active ? 600 : 400,
+  })
 
   return (
     <section className="report">
@@ -77,14 +89,34 @@ export function DeltaCodecPanel() {
         RGBA. Industry says you pick one of "lossy-small" or "byte-exact." We're testing whether
         you can have both.
       </p>
-      <div className="actions" style={{ display: 'flex', gap: '0.6rem', marginTop: '0.6rem' }}>
+      <div
+        className="actions"
+        style={{ display: 'flex', gap: '0.6rem', marginTop: '0.6rem', alignItems: 'center', flexWrap: 'wrap' }}
+      >
         <button onClick={runSynthetic} disabled={pending}>
           {pending ? 'running…' : 'run synthetic bench'}
         </button>
         <button onClick={runOnFile} disabled={pending}>
           run on image…
         </button>
+        <div
+          role="group"
+          aria-label="downsample factor"
+          style={{ display: 'inline-flex', marginLeft: 'auto', borderRadius: 3, overflow: 'hidden' }}
+        >
+          <button style={segBtn(downsample === 2)} disabled={pending} onClick={() => setDownsample(2)}>
+            2× · bilinear
+          </button>
+          <button style={segBtn(downsample === 4)} disabled={pending} onClick={() => setDownsample(4)}>
+            4× · bilinear + ESRGAN
+          </button>
+        </div>
       </div>
+      <p className="muted small" style={{ marginTop: '0.4rem' }}>
+        Downsample sets how hard the low mip is shrunk before prediction. <b>4×</b> is the realistic
+        shrinkray strip and the only ratio Real-ESRGAN can upscale, so it runs bilinear and ESRGAN
+        paired (image bench only) — ESRGAN inference makes that run slower.
+      </p>
 
       {err && (
         <p className="err small" style={{ marginTop: '0.6rem' }}>
@@ -104,6 +136,7 @@ export function DeltaCodecPanel() {
               <thead>
                 <tr>
                   <th>sample</th>
+                  <th>predictor</th>
                   <th>q</th>
                   <th>top mip</th>
                   <th>low mip</th>
@@ -118,6 +151,9 @@ export function DeltaCodecPanel() {
                 {result.rows.map((r, i) => (
                   <tr key={i} className={r.quant_step === 1 ? 'lossless-row' : 'lossy-row'}>
                     <td>{r.sample}</td>
+                    <td style={{ color: r.predictor === 'esrgan' ? '#d8b4fe' : '#9fc4e8' }}>
+                      {r.predictor}
+                    </td>
                     <td style={{ textAlign: 'right' }}>{r.quant_step}</td>
                     <td style={{ textAlign: 'right' }}>{fmtBytes(r.top_mip_bytes)}</td>
                     <td style={{ textAlign: 'right' }}>{fmtBytes(r.low_mip_bytes)}</td>
@@ -147,12 +183,14 @@ export function DeltaCodecPanel() {
             </table>
           </div>
           <p className="muted small" style={{ marginTop: '0.6rem' }}>
-            {result.lossless_runs} byte-exact run(s) · best ratio{' '}
+            {result.lossless_runs} byte-exact run(s) · best byte-exact ratio{' '}
             <span style={{ color: '#9efc8c', fontWeight: 600 }}>
               {result.best_lossless_ratio.toFixed(2)}×
             </span>{' '}
-            of the ExactBackup baseline. q=1 is lossless; q=2/4 trade bounded error for further
-            residual shrink. Any ratio &lt; 1.0× beats full backup on disk.
+            of the ExactBackup baseline (the q=1 oracle — smallest across predictors). q&gt;1 rows
+            trade away byte-exactness and don&apos;t count as wins. Note: this ratio includes the
+            low mip; in the strip workflow that mip already lives in the pak, so the true marginal
+            cost of reversibility is the <b>residual</b> column alone.
           </p>
         </div>
       )}

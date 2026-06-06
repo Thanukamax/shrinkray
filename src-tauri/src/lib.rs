@@ -577,6 +577,7 @@ fn path_parent(path: String) -> Option<String> {
 #[derive(serde::Serialize, Debug)]
 struct DeltaCodecBenchRow {
     sample: String,
+    predictor: String,
     quant_step: u8,
     top_mip_bytes: usize,
     low_mip_bytes: usize,
@@ -596,70 +597,206 @@ struct DeltaCodecBenchResult {
     spec_version: String,
 }
 
+use shrinkray_delta_codec::{Predictor, PredictorId};
+
+/// Type-erased predictor so a single bench loop can swap bilinear ↔ ESRGAN.
+/// `encode_texture`/`decode_texture` are generic over `Predictor` and need a
+/// `Sized` type, so we dispatch through an enum rather than `dyn Predictor`.
+enum AnyPredictor {
+    Bilinear(shrinkray_delta_codec::BilinearPredictor),
+    Esrgan(shrinkray_core::predictors::EsrganX4Predictor),
+}
+
+impl Predictor for AnyPredictor {
+    fn id(&self) -> PredictorId {
+        match self {
+            AnyPredictor::Bilinear(p) => p.id(),
+            AnyPredictor::Esrgan(p) => p.id(),
+        }
+    }
+    fn predict(
+        &mut self,
+        low: &[u8],
+        lw: u32,
+        lh: u32,
+        tw: u32,
+        th: u32,
+    ) -> anyhow::Result<Vec<u8>> {
+        match self {
+            AnyPredictor::Bilinear(p) => p.predict(low, lw, lh, tw, th),
+            AnyPredictor::Esrgan(p) => p.predict(low, lw, lh, tw, th),
+        }
+    }
+}
+
+/// Memoizes a single prediction so ESRGAN inference runs once per sample
+/// instead of once per (q-step × encode/decode). The prediction is a pure
+/// function of (low content, dims); within one sample the low mip is fixed,
+/// so keying on dims alone is sound.
+struct CachingPredictor<P: Predictor> {
+    inner: P,
+    cached: Option<((u32, u32, u32, u32), Vec<u8>)>,
+}
+
+impl<P: Predictor> CachingPredictor<P> {
+    fn new(inner: P) -> Self {
+        Self { inner, cached: None }
+    }
+}
+
+impl<P: Predictor> Predictor for CachingPredictor<P> {
+    fn id(&self) -> PredictorId {
+        self.inner.id()
+    }
+    fn predict(
+        &mut self,
+        low: &[u8],
+        lw: u32,
+        lh: u32,
+        tw: u32,
+        th: u32,
+    ) -> anyhow::Result<Vec<u8>> {
+        let key = (lw, lh, tw, th);
+        if let Some((k, v)) = &self.cached {
+            if *k == key {
+                return Ok(v.clone());
+            }
+        }
+        let out = self.inner.predict(low, lw, lh, tw, th)?;
+        self.cached = Some((key, out.clone()));
+        Ok(out)
+    }
+}
+
+fn predictor_label(id: &PredictorId) -> String {
+    match id {
+        PredictorId::Bilinear => "bilinear".to_string(),
+        PredictorId::RealEsrganX4 => "esrgan".to_string(),
+        PredictorId::Onnx4x { .. } => "onnx".to_string(),
+    }
+}
+
+/// Crop an RGBA buffer so both dims are multiples of `m`. ESRGAN-x4 requires
+/// `top == 4×low` exactly, and `box_downsample_2x` needs even dims at each
+/// step; cropping a few edge pixels keeps the downsample chain exact for both
+/// predictors so their ratios stay directly comparable.
+fn crop_to_multiple(rgba: &[u8], w: u32, h: u32, m: u32) -> (Vec<u8>, u32, u32) {
+    let nw = w - (w % m);
+    let nh = h - (h % m);
+    if nw == w && nh == h {
+        return (rgba.to_vec(), w, h);
+    }
+    let mut out = Vec::with_capacity((nw * nh * 4) as usize);
+    for y in 0..nh {
+        let row = (y * w * 4) as usize;
+        out.extend_from_slice(&rgba[row..row + (nw * 4) as usize]);
+    }
+    (out, nw, nh)
+}
+
+/// Downsample by `factor` (2 or 4) via repeated 2× box filtering.
+fn downsample_to(rgba: &[u8], w: u32, h: u32, factor: u8) -> Result<(Vec<u8>, u32, u32), String> {
+    use shrinkray_delta_codec::box_downsample_2x;
+    let steps = match factor {
+        2 => 1,
+        4 => 2,
+        other => return Err(format!("unsupported downsample {other}× (use 2 or 4)")),
+    };
+    let mut cur = (rgba.to_vec(), w, h);
+    for _ in 0..steps {
+        let (d, dw, dh) = box_downsample_2x(&cur.0, cur.1, cur.2).map_err(|e| e.to_string())?;
+        cur = (d, dw, dh);
+    }
+    Ok(cur)
+}
+
+/// Run Δ-Codec on one sample across q ∈ {1,2,4} for every available predictor.
+/// `downsample` is 2 (low = top/2) or 4 (low = top/4, the realistic shrinkray
+/// strip). ESRGAN-x4 only upscales 4×, so it joins the run only at
+/// `downsample == 4`, only when `allow_esrgan` is set (it's meaningless on
+/// synthetic gradients/noise), and only when the ONNX model is on disk.
 fn run_bench_on_sample(
     label: &str,
     rgba: &[u8],
     w: u32,
     h: u32,
+    downsample: u8,
+    allow_esrgan: bool,
 ) -> Result<Vec<DeltaCodecBenchRow>, String> {
-    use shrinkray_delta_codec::{
-        box_downsample_2x, decode_texture, encode_texture, BilinearPredictor,
-    };
+    use shrinkray_core::predictors::EsrganX4Predictor;
+    use shrinkray_delta_codec::{decode_texture, encode_texture, BilinearPredictor};
 
-    let baseline = rgba.len();
-    let (low, lw, lh) = box_downsample_2x(rgba, w, h).map_err(|e| e.to_string())?;
-    let mut rows = Vec::with_capacity(3);
-    for q in [1u8, 2, 4] {
-        let mut predictor = BilinearPredictor;
-        let bs = encode_texture(
-            &mut predictor,
-            rgba,
-            w,
-            h,
-            low.clone(),
-            lw,
-            lh,
-            q,
-            q == 1,
-        )
-        .map_err(|e| e.to_string())?;
-        let size = bs.size();
-        let mut dec_pred = BilinearPredictor;
-        let restored = decode_texture(&mut dec_pred, &bs).map_err(|e| e.to_string())?;
-        let max_err = rgba
-            .iter()
-            .zip(restored.iter())
-            .map(|(a, b)| ((*a as i32) - (*b as i32)).unsigned_abs())
-            .max()
-            .unwrap_or(0);
-        let byte_exact = restored == rgba;
-        rows.push(DeltaCodecBenchRow {
-            sample: label.to_string(),
-            quant_step: q,
-            top_mip_bytes: baseline,
-            low_mip_bytes: size.low_mip_bytes,
-            residual_zst_bytes: size.residual_zst_bytes,
-            delta_total_bytes: size.total_bytes,
-            ratio: size.total_bytes as f64 / baseline as f64,
-            max_channel_error: max_err,
-            byte_exact,
-        });
+    let (top, w, h) = crop_to_multiple(rgba, w, h, downsample as u32);
+    let baseline = top.len();
+    let (low, lw, lh) = downsample_to(&top, w, h, downsample)?;
+
+    let mut predictors: Vec<AnyPredictor> = vec![AnyPredictor::Bilinear(BilinearPredictor)];
+    if allow_esrgan && downsample == 4 {
+        if let Some(model) = EsrganX4Predictor::locate_default() {
+            match EsrganX4Predictor::new(&model) {
+                Ok(p) => predictors.push(AnyPredictor::Esrgan(p)),
+                Err(e) => eprintln!("[delta-codec] ESRGAN unavailable, skipping: {e}"),
+            }
+        }
+    }
+
+    let mut rows = Vec::with_capacity(predictors.len() * 3);
+    for pred in predictors {
+        let label_pred = predictor_label(&pred.id());
+        let mut cache = CachingPredictor::new(pred);
+        for q in [1u8, 2, 4] {
+            let bs = encode_texture(&mut cache, &top, w, h, low.clone(), lw, lh, q, q == 1)
+                .map_err(|e| e.to_string())?;
+            let size = bs.size();
+            let restored = decode_texture(&mut cache, &bs).map_err(|e| e.to_string())?;
+            let max_err = top
+                .iter()
+                .zip(restored.iter())
+                .map(|(a, b)| ((*a as i32) - (*b as i32)).unsigned_abs())
+                .max()
+                .unwrap_or(0);
+            let byte_exact = restored == top;
+            rows.push(DeltaCodecBenchRow {
+                sample: label.to_string(),
+                predictor: label_pred.clone(),
+                quant_step: q,
+                top_mip_bytes: baseline,
+                low_mip_bytes: size.low_mip_bytes,
+                residual_zst_bytes: size.residual_zst_bytes,
+                delta_total_bytes: size.total_bytes,
+                ratio: size.total_bytes as f64 / baseline as f64,
+                max_channel_error: max_err,
+                byte_exact,
+            });
+        }
     }
     Ok(rows)
 }
 
 fn finalize_bench(mut rows: Vec<DeltaCodecBenchRow>) -> DeltaCodecBenchResult {
-    rows.sort_by_key(|r| (r.sample.clone(), r.quant_step));
+    rows.sort_by(|a, b| {
+        (a.sample.as_str(), a.predictor.as_str(), a.quant_step).cmp(&(
+            b.sample.as_str(),
+            b.predictor.as_str(),
+            b.quant_step,
+        ))
+    });
+    // "best lossless ratio" is the oracle: the smallest q=1 byte-exact ratio
+    // across all predictors. Lossy q>1 rows are excluded — they trade away the
+    // byte-exact guarantee that is the whole point, so they don't count as wins.
     let mut best_ratio = f64::INFINITY;
     let mut lossless_runs = 0u32;
     let total_runs = rows.len() as u32;
     for r in &rows {
         if r.quant_step == 1 && r.byte_exact {
             lossless_runs += 1;
+            if r.ratio < best_ratio {
+                best_ratio = r.ratio;
+            }
         }
-        if r.ratio < best_ratio {
-            best_ratio = r.ratio;
-        }
+    }
+    if !best_ratio.is_finite() {
+        best_ratio = 0.0;
     }
     DeltaCodecBenchResult {
         rows,
@@ -674,27 +811,43 @@ fn finalize_bench(mut rows: Vec<DeltaCodecBenchRow>) -> DeltaCodecBenchResult {
 /// classes (smooth gradient, textured gradient, high-frequency noise) at
 /// 256×256. Fast (<1s), reproducible, no model needed. The UI calls this
 /// first so a fresh user sees real numbers immediately.
+fn validate_downsample(downsample: u8) -> Result<u8, String> {
+    match downsample {
+        2 | 4 => Ok(downsample),
+        other => Err(format!("downsample must be 2 or 4 (got {other})")),
+    }
+}
+
 #[tauri::command]
-fn delta_codec_run_synthetic_bench() -> Result<DeltaCodecBenchResult, String> {
+fn delta_codec_run_synthetic_bench(downsample: u8) -> Result<DeltaCodecBenchResult, String> {
+    let ds = validate_downsample(downsample)?;
     let dim = 256u32;
     let mut all = Vec::new();
+    // ESRGAN is trained on natural images; running it on synthetic
+    // gradients/noise is meaningless, so the synthetic bench is bilinear-only.
     all.extend(run_bench_on_sample(
         "smooth_gradient",
         &synth_smooth(dim, dim),
         dim,
         dim,
+        ds,
+        false,
     )?);
     all.extend(run_bench_on_sample(
         "textured_gradient",
         &synth_textured(dim, dim),
         dim,
         dim,
+        ds,
+        false,
     )?);
     all.extend(run_bench_on_sample(
         "high_freq_noise",
         &synth_noise(dim, dim),
         dim,
         dim,
+        ds,
+        false,
     )?);
     Ok(finalize_bench(all))
 }
@@ -703,7 +856,11 @@ fn delta_codec_run_synthetic_bench() -> Result<DeltaCodecBenchResult, String> {
 /// the image to a 1024×1024 max so the bench stays interactive. This is the
 /// "pick any image, watch it become byte-exactly compressed" demo move.
 #[tauri::command]
-fn delta_codec_run_file_bench(path: String) -> Result<DeltaCodecBenchResult, String> {
+fn delta_codec_run_file_bench(
+    path: String,
+    downsample: u8,
+) -> Result<DeltaCodecBenchResult, String> {
+    let ds = validate_downsample(downsample)?;
     let img = image::open(&path).map_err(|e| format!("open {path}: {e}"))?;
     let rgba = img.to_rgba8();
     let (w, h) = rgba.dimensions();
@@ -726,7 +883,7 @@ fn delta_codec_run_file_bench(path: String) -> Result<DeltaCodecBenchResult, Str
         .file_name()
         .map(|n| n.to_string_lossy().into_owned())
         .unwrap_or_else(|| "<unnamed>".to_string());
-    let rows = run_bench_on_sample(&label, &bytes, final_w, final_h)?;
+    let rows = run_bench_on_sample(&label, &bytes, final_w, final_h, ds, true)?;
     Ok(finalize_bench(rows))
 }
 
