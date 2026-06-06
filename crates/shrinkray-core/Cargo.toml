@@ -68,3 +68,10 @@ required-features = ["inference"]
 name = "router_gate"
 path = "examples/router_gate.rs"
 required-features = ["inference"]
+
+# BCn gate: residual measured against the on-disk BCn byte count (not RGBA) —
+# the honest cooked-texture file-size delta vs ExactBackup.
+[[example]]
+name = "bcn_gate"
+path = "examples/bcn_gate.rs"
+required-features = ["inference"]
