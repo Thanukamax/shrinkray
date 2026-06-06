@@ -971,3 +971,95 @@ pub fn run() {
         .run(tauri::generate_context!())
         .expect("error while running tauri application");
 }
+
+#[cfg(test)]
+mod delta_codec_demo_tests {
+    use super::*;
+
+    const SAMPLE_PNG: &str = "../docs/screenshots/hero.png";
+
+    fn assert_q1_byte_exact(res: &DeltaCodecBenchResult) {
+        for r in &res.rows {
+            if r.quant_step == 1 {
+                assert!(
+                    r.byte_exact && r.max_channel_error == 0,
+                    "q=1 must be byte-exact for predictor {} (max_err={})",
+                    r.predictor,
+                    r.max_channel_error
+                );
+            }
+        }
+        assert!(res.lossless_runs >= 1, "expected at least one byte-exact run");
+        assert!(
+            res.best_lossless_ratio.is_finite() && res.best_lossless_ratio > 0.0,
+            "best_lossless_ratio should be a finite oracle, got {}",
+            res.best_lossless_ratio
+        );
+    }
+
+    #[test]
+    fn downsample_must_be_2_or_4() {
+        assert!(validate_downsample(3).is_err());
+        assert!(validate_downsample(2).is_ok());
+        assert!(validate_downsample(4).is_ok());
+    }
+
+    #[test]
+    fn file_bench_2x_is_bilinear_only() {
+        if !std::path::Path::new(SAMPLE_PNG).exists() {
+            eprintln!("skip: {SAMPLE_PNG} not found");
+            return;
+        }
+        let res = delta_codec_run_file_bench(SAMPLE_PNG.to_string(), 2).expect("2x bench");
+        let preds: std::collections::BTreeSet<_> =
+            res.rows.iter().map(|r| r.predictor.as_str()).collect();
+        assert_eq!(
+            preds,
+            ["bilinear"].into_iter().collect(),
+            "2x must be bilinear-only (ESRGAN needs 4x)"
+        );
+        assert_q1_byte_exact(&res);
+    }
+
+    #[test]
+    fn file_bench_4x_runs_paired_when_model_present() {
+        use shrinkray_core::predictors::EsrganX4Predictor;
+        if !std::path::Path::new(SAMPLE_PNG).exists() {
+            eprintln!("skip: {SAMPLE_PNG} not found");
+            return;
+        }
+        let res = delta_codec_run_file_bench(SAMPLE_PNG.to_string(), 4).expect("4x bench");
+
+        eprintln!("\n--- Δ-Codec 4× paired run on {SAMPLE_PNG} ---");
+        eprintln!("predictor  q  top        low        residual   ratio   maxerr  exact");
+        for r in &res.rows {
+            eprintln!(
+                "{:<9}  {}  {:<9}  {:<9}  {:<9}  {:.3}   {:<6} {}",
+                r.predictor,
+                r.quant_step,
+                r.top_mip_bytes,
+                r.low_mip_bytes,
+                r.residual_zst_bytes,
+                r.ratio,
+                r.max_channel_error,
+                if r.byte_exact { "YES" } else { "—" },
+            );
+        }
+        eprintln!(
+            "oracle best byte-exact ratio: {:.3}× ({} lossless runs)\n",
+            res.best_lossless_ratio, res.lossless_runs
+        );
+
+        assert!(res.rows.iter().any(|r| r.predictor == "bilinear"));
+        assert_q1_byte_exact(&res);
+
+        if EsrganX4Predictor::locate_default().is_some() {
+            assert!(
+                res.rows.iter().any(|r| r.predictor == "esrgan"),
+                "model is present, so the 4x run must include ESRGAN rows"
+            );
+        } else {
+            eprintln!("note: ESRGAN model absent — degraded to bilinear-only (expected in CI)");
+        }
+    }
+}
