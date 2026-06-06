@@ -60,3 +60,11 @@ path = "examples/gen_synthetic_corpus.rs"
 name = "esrgan_smoke"
 path = "examples/esrgan_smoke.rs"
 required-features = ["inference"]
+
+# Router gate (warmcore Phase-1): measures codec-vs-backup routing headroom +
+# cheap-feature separability before any router is trained. Needs `image` (via
+# the inference feature). Bilinear-only — does not load the ONNX model.
+[[example]]
+name = "router_gate"
+path = "examples/router_gate.rs"
+required-features = ["inference"]
