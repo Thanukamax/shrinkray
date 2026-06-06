@@ -1,0 +1,57 @@
+// shrinkray — jit-oracle -> codec concept mapping
+// render: dot -Tsvg 03-jit-oracle-mapping.dot -o 03-jit-oracle-mapping.svg
+digraph mapping {
+  rankdir=TB;
+  bgcolor="white";
+  labelloc="t";
+  fontname="Helvetica"; fontsize=16;
+  label="jit-oracle → Δ-Codec  —  expensive offline, free at runtime: the learned router is gated out, brute-force-and-store wins";
+  node  [shape=box style="rounded,filled" fontname="Helvetica" fontsize=11 color="#333333" penwidth=1.1 margin="0.18,0.10" fillcolor="#eef3f8"];
+  edge  [fontname="Helvetica" fontsize=9 color="#555555"];
+
+  START [label="jit-oracle core idea:\nmove the model OFF the hot path"
+         fillcolor="#2b2b2b" fontcolor="white" penwidth=0];
+  GATE  [label="Phase-1 headroom gate:\nis there measurable headroom in the decision?"
+         shape=diamond fillcolor="#dfe7f3"];
+
+  START -> GATE;
+
+  subgraph cluster_dead {
+    label="Branch A — learned predictor router   (GATED OUT)";
+    style="rounded,filled"; fillcolor="#fbeeee"; color="#e0a3a3"; fontsize=12;
+    A1 [label="train classifier:\ntexture features → which predictor" fillcolor="#5a1a1a" fontcolor="white"];
+    A2 [label="n=56 data: perfect-oracle lift = 5.3%" fillcolor="#5a1a1a" fontcolor="white"];
+    A3 [label="hp_energy probe: 87.5% acc\nvs 89.3% always-bilinear baseline" fillcolor="#5a1a1a" fontcolor="white"];
+    A4 [label="→ router is WORSE than guessing\n= no headroom" fillcolor="#5a1a1a" fontcolor="white"];
+    A1 -> A2 -> A3 -> A4;
+  }
+
+  subgraph cluster_live {
+    label="Branch B — encode-time brute-force + store   (BUILD THIS)";
+    style="rounded,filled"; fillcolor="#eef6ef"; color="#9ccfa6"; fontsize=12;
+    B1 [label="encode is compile-time → afford anything" fillcolor="#1f6f3f" fontcolor="white"];
+    B2 [label="run BOTH predictors, measure residual size" fillcolor="#1f6f3f" fontcolor="white"];
+    B3 [label="store winner in PredictorId (1 bit / texture)" fillcolor="#1f6f3f" fontcolor="white"];
+    B4 [label="decode reads PredictorId — no guessing" fillcolor="#1f6f3f" fontcolor="white"];
+    B5 [label="captures FULL 5.3% oracle\nzero router · zero train · zero gate-risk" fillcolor="#1f6f3f" fontcolor="white"];
+    B1 -> B2 -> B3 -> B4 -> B5;
+  }
+
+  GATE -> A1 [label="fails — codec already ran its gate" color="#b03030" fontcolor="#b03030"];
+  GATE -> B1 [label="reframe: cheapest model = exhaustive\nsearch at compile time + stored answer" color="#2f8f4f" fontcolor="#2f8f4f"];
+
+  subgraph cluster_xfer {
+    label="What actually transfers across repos";
+    style="rounded,filled"; fillcolor="#f7f7f4"; color="#cccccc"; fontsize=12;
+    T1 [label="residency-bench: compute-vs-reach framing\n→ explains WHY bilinear decode must stay\n(MAC wall = same wall NBTE hit)"];
+    T2 [label="shared discipline: headroom gate +\nn ≥ 40 sample rule + publish-the-negative"];
+    T3 [label="NOT reused: the Rust code itself"];
+  }
+
+  OPEN [label="Still open: distilled tiny model in sidecar\nmay clear the gate on NON-PBR content\n(UI / semantic diffuse) — needs n ≥ 40 first"
+        fillcolor="#7a5b00" fontcolor="white"];
+
+  A4 -> T1 [style=dashed];
+  B5 -> T2 [style=dashed];
+  T2 -> OPEN [style=dashed];
+}

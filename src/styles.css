@@ -607,6 +607,53 @@ tr.dropping td { color: #1a1a1a; }
 }
 .mipstrip-apply-note p { margin: 0; }
 .mipstrip-apply-note ul { margin-top: 6px; padding-left: 8px; }
+.mipstrip-apply-note details { margin-top: 8px; }
+.mipstrip-apply-note summary { cursor: pointer; }
+
+/* v0.7.2 live apply progress. One row per texture finished arrives via the
+ * `strip-progress` Tauri event from the sidecar's ProgressEmitter; the bar
+ * + filename + elapsed/ETA line live below the apply button until the run
+ * settles and the result-summary block takes over. */
+.mipstrip-progress {
+  margin-top: 8px;
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+}
+.mipstrip-progress-bar {
+  width: 100%;
+  height: 6px;
+  background: rgba(0, 0, 0, 0.08);
+  border: 1px solid var(--sr-border, rgba(0, 0, 0, 0.15));
+  border-radius: 3px;
+  overflow: hidden;
+}
+.mipstrip-progress-fill {
+  height: 100%;
+  background: var(--sr-accent, #4a7c8a);
+  transition: width 120ms linear;
+}
+.mipstrip-progress-meta {
+  display: flex;
+  justify-content: space-between;
+  gap: 12px;
+  white-space: nowrap;
+  overflow: hidden;
+}
+.mipstrip-progress-meta > span:first-child {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  flex: 1 1 auto;
+}
+.mipstrip-progress-meta > span:last-child {
+  flex: 0 0 auto;
+}
+
+/* Restore class pills in the planner table — colour-codes which textures
+ * become AI-restorable / backup-required / skipped per the classifier. */
+.restore-ai      { color: #1f6f3b; font-weight: 600; }
+.restore-backup  { color: #6f4d1f; font-weight: 600; }
+.restore-skip    { color: #6f1f1f; font-weight: 600; }
 .mipstrip-game {
   font-family: inherit;
   font-size: 0.9em;

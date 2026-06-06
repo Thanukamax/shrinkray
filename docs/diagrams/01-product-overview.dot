@@ -1,0 +1,57 @@
+// shrinkray — product overview (the product so far)
+// render: dot -Tsvg 01-product-overview.dot -o 01-product-overview.svg
+digraph product {
+  rankdir=TB;
+  bgcolor="white";
+  labelloc="t";
+  fontname="Helvetica"; fontsize=16;
+  label="shrinkray — the product so far  (green = shipped v0.7.3 · amber = v0.7.4 in flight)";
+  node  [shape=box style="rounded,filled" fontname="Helvetica" fontsize=11 color="#333333" penwidth=1.1 margin="0.18,0.10"];
+  edge  [fontname="Helvetica" fontsize=9 color="#555555"];
+
+  subgraph cluster_ui {
+    label="Frontend — React + TS (Win7 Aero chrome)";
+    style="rounded,filled"; fillcolor="#eef3f8"; color="#9bb4cf"; fontsize=12;
+    U1 [label="Strip / Project view"            fillcolor="#1f6f3f" fontcolor="white"];
+    U2 [label="Audit view"                       fillcolor="#1f6f3f" fontcolor="white"];
+    U3 [label="Restore (AI) view\n(v0.7.4 in flight)" fillcolor="#7a5b00" fontcolor="white"];
+  }
+
+  subgraph cluster_core {
+    label="Rust core — crates/";
+    style="rounded,filled"; fillcolor="#eef6ef"; color="#9ccfa6"; fontsize=12;
+    C1 [label="shrinkray-core\nstrip · backup · restore-plan · reports" fillcolor="#1f6f3f" fontcolor="white"];
+    C2 [label="shrinkray-delta-codec\npredictor + residual bitstream"      fillcolor="#7a5b00" fontcolor="white"];
+    C3 [label="predictors/\nbilinear · esrgan (feature-gated)"            fillcolor="#7a5b00" fontcolor="white"];
+  }
+
+  subgraph cluster_side {
+    label="C# sidecar — src-tauri/binaries";
+    style="rounded,filled"; fillcolor="#f5f0fa"; color="#c3a9d9"; fontsize=12;
+    S1 [label="CUE4Parse + UAssetAPI\ncooked .uasset round-trip" fillcolor="#1f6f3f" fontcolor="white"];
+    S2 [label="apply_restore_mips\nreverse-splice mips back in" fillcolor="#1f6f3f" fontcolor="white"];
+  }
+
+  subgraph cluster_disk {
+    label="On-disk artifacts";
+    style="rounded,filled"; fillcolor="#f7f7f4"; color="#cccccc"; fontsize=12;
+    D1 [label="cooked .pak / .ucas"             fillcolor="#1f6f3f" fontcolor="white"];
+    D2 [label="payloads/ strip records"          fillcolor="#1f6f3f" fontcolor="white"];
+    D3 [label=".dcdc sidecars (residuals)"       fillcolor="#7a5b00" fontcolor="white"];
+    D4 [label="payloads/original-mips/\n(opt-in ground truth)" fillcolor="#7a5b00" fontcolor="white"];
+  }
+
+  // wiring
+  U1 -> C1 [label="Tauri IPC"];
+  U2 -> C1 [label="Tauri IPC"];
+  U3 -> C2 [label="Tauri IPC"];
+  C1 -> S1 [label="spawn sidecar"];
+  C2 -> C3 [label="uses"];
+  C1 -> D1;
+  C1 -> D2;
+  C2 -> D3;
+  C1 -> D4 [style=dashed label="opt-in"];
+  S1 -> D1;
+  S2 -> D1;
+  C1 -> S2 [style=invis];
+}

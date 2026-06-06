@@ -1,6 +1,9 @@
+using System.Collections.Concurrent;
 using System.Linq;
 using System.Text.Json.Serialization;
+using System.Threading;
 using CUE4Parse.FileProvider;
+using CUE4Parse.FileProvider.Objects;
 using CUE4Parse.UE4.Assets.Exports.Texture;
 using CUE4Parse.UE4.Objects.UObject;
 using CUE4Parse.UE4.Pak;
@@ -13,6 +16,15 @@ namespace Shrinkray.Sidecar;
 // Read-only. Apply path lands in a follow-up command once we wire UAssetAPI
 // for write-side serialization.
 
+/// One mip level's metadata — width, height, on-disk size in bytes. Used by
+/// v0.7.2's client-side re-projection: the frontend caches the full mip
+/// array per texture and recomputes drop_mip_count / save_bytes locally when
+/// the user changes max_dim, instead of calling the sidecar again.
+public sealed record StripMipsLevel(
+    [property: JsonPropertyName("w")] int Width,
+    [property: JsonPropertyName("h")] int Height,
+    [property: JsonPropertyName("bytes")] long Bytes);
+
 public sealed record StripMipsItem(
     [property: JsonPropertyName("asset_path")] string AssetPath,
     [property: JsonPropertyName("export_name")] string ExportName,
@@ -23,7 +35,9 @@ public sealed record StripMipsItem(
     [property: JsonPropertyName("drop_mip_count")] int DropMipCount,
     [property: JsonPropertyName("kept_mip_count")] int KeptMipCount,
     [property: JsonPropertyName("save_bytes")] long SaveBytes,
-    [property: JsonPropertyName("original_bytes")] long OriginalBytes);
+    [property: JsonPropertyName("original_bytes")] long OriginalBytes,
+    [property: JsonPropertyName("compression_settings")] string? CompressionSettings,
+    [property: JsonPropertyName("mips")] IReadOnlyList<StripMipsLevel> Mips);
 
 public sealed record ClassCount(
     [property: JsonPropertyName("class_name")] string ClassName,
@@ -92,70 +106,95 @@ public static class StripMipsPlannerImpl
         provider.PostMount();
         provider.LoadVirtualPaths();
 
-        var items = new List<StripMipsItem>();
-        var classHisto = new Dictionary<string, int>(StringComparer.Ordinal);
-        long totalSave = 0;
-        long totalTex = 0;
-        int textureCount = 0;
-        int scannedAssets = 0;
-        bool truncated = false;
-
+        // v0.7.2: pre-collect the candidate package list so we can drive a
+        // Parallel.ForEach with deterministic bounds. Filtering by
+        // `IsUePackage` upfront avoids spinning up worker threads for the
+        // ~85% of pak entries that aren't packages.
+        var candidates = new List<GameFile>(assetLimit);
         foreach (var kv in reader.Files)
         {
-            var file = kv.Value;
-            // Only inspect package containers — IsUePackage flags .uasset /
-            // .umap. The .uexp / .ubulk sidecars are loaded transitively by
-            // TryLoadPackage.
-            if (!file.IsUePackage) continue;
+            if (!kv.Value.IsUePackage) continue;
+            if (candidates.Count >= assetLimit) break;
+            candidates.Add(kv.Value);
+        }
+        int totalPackages = candidates.Count;
+        bool truncated = totalPackages >= assetLimit;
 
-            if (scannedAssets >= assetLimit)
+        // Concurrent accumulators. CUE4Parse's provider is the shared
+        // resource — its underlying pak readers are tested as concurrent-read-
+        // safe for already-mounted paks in practice, but we still guard the
+        // class histogram + emit lock so worker output is consistent.
+        var items = new ConcurrentBag<StripMipsItem>();
+        var classHisto = new ConcurrentDictionary<string, int>(StringComparer.Ordinal);
+        long totalSaveAtomic = 0;
+        long totalTexAtomic = 0;
+        int textureCountAtomic = 0;
+        int scannedAssetsAtomic = 0;
+
+        // Use all logical cores up to 12 — diminishing returns past that and
+        // we don't want to monopolize the user's machine for a planner pass.
+        int workerCount = Math.Min(12, Math.Max(2, Environment.ProcessorCount));
+        var parallelOpts = new ParallelOptions { MaxDegreeOfParallelism = workerCount };
+
+        Parallel.ForEach(candidates, parallelOpts, file =>
+        {
+            int localScanned = Interlocked.Increment(ref scannedAssetsAtomic);
+
+            // Progress emission: throttled to every 10 textures + final tick.
+            // The emit itself is locked inside ProgressEmitter so concurrent
+            // workers don't interleave bytes on the JSON stream.
+            if (localScanned % 10 == 0 || localScanned == totalPackages)
             {
-                truncated = true;
-                break;
+                ProgressEmitter.Emit(new
+                {
+                    op = "plan_strip_mips",
+                    current = localScanned,
+                    total = totalPackages,
+                    asset_path = file.Path,
+                });
             }
-            scannedAssets++;
 
+            CUE4Parse.UE4.Assets.IPackage? pkg = null;
             try
             {
-                CUE4Parse.UE4.Assets.IPackage? pkg = null;
                 if (provider.Files.TryGetValue(file.Path, out var direct))
                 {
                     try { pkg = provider.LoadPackage(direct); }
                     catch { /* per-package load failures are normal */ }
                 }
-                if (pkg is null) continue;
+            }
+            catch
+            {
+                return;
+            }
+            if (pkg is null) return;
 
-                // GetExports() materializes typed exports — OfType<UTexture>
-                // filters by runtime type, which is the only reliable way to
-                // catch UTexture2D + UTextureCube without missing subclasses.
+            try
+            {
                 foreach (var obj in pkg.GetExports())
                 {
                     if (obj is null) continue;
-                    // Histogram by RUNTIME type (GetType().Name), so we can see
-                    // whether CUE4Parse is constructing UTexture2D or just bare
-                    // UObject with ExportType=Texture2D.
                     var exportType = obj.ExportType ?? "<null>";
                     var runtimeType = obj.GetType().FullName ?? obj.GetType().Name;
                     var className = $"{exportType} → {runtimeType}";
+                    // Cap histogram width to keep responses small even under
+                    // pathological cooks. AddOrUpdate is the concurrent
+                    // increment idiom.
                     if (classHisto.Count < 80 || classHisto.ContainsKey(className))
-                        classHisto[className] = classHisto.GetValueOrDefault(className) + 1;
+                        classHisto.AddOrUpdate(className, 1, (_, v) => v + 1);
 
-                    // Match by GetType().Name — covers UTexture2D, UTextureCube,
-                    // UVirtualTexture2D and any future subclass without
-                    // requiring a typed cast (which CUE4Parse 1.x sometimes
-                    // doesn't honor reliably for cooked content).
                     var typeName = obj.GetType().Name;
                     if (!typeName.StartsWith("UTexture")) continue;
                     try
                     {
                         var item = ProjectStripFromUObject(file.Path, obj, typeName, maxDim);
                         if (item is null) continue;
-                        textureCount++;
-                        totalTex += item.OriginalBytes;
+                        Interlocked.Increment(ref textureCountAtomic);
+                        Interlocked.Add(ref totalTexAtomic, item.OriginalBytes);
+                        items.Add(item);
                         if (item.SaveBytes > 0)
                         {
-                            items.Add(item);
-                            totalSave += item.SaveBytes;
+                            Interlocked.Add(ref totalSaveAtomic, item.SaveBytes);
                         }
                     }
                     catch
@@ -168,7 +207,12 @@ public static class StripMipsPlannerImpl
             {
                 // Per-package load failures are normal — skip.
             }
-        }
+        });
+
+        int scannedAssets = scannedAssetsAtomic;
+        int textureCount = textureCountAtomic;
+        long totalSave = totalSaveAtomic;
+        long totalTex = totalTexAtomic;
 
         var histoSorted = classHisto
             .OrderByDescending(kv => kv.Value)
@@ -177,14 +221,14 @@ public static class StripMipsPlannerImpl
             .ToList();
 
         // Largest savings first.
-        items.Sort((a, b) => b.SaveBytes.CompareTo(a.SaveBytes));
+        var itemsList = items.OrderByDescending(i => i.SaveBytes).ToList();
 
         return new PlanStripMipsResult(
             PakPath: pakPath,
             MaxDim: maxDim,
             ScannedAssets: scannedAssets,
             TextureCount: textureCount,
-            Items: items,
+            Items: itemsList,
             TotalSaveBytes: totalSave,
             TotalTextureBytes: totalTex,
             Truncated: truncated,
@@ -235,14 +279,24 @@ public static class StripMipsPlannerImpl
         }
         if (sizeX <= 0 || sizeY <= 0 || numMips <= 0) return null;
 
+        // Pull CompressionSettings UPROPERTY when the cook serialized it.
+        // Many UE4 cooks drop this — the Rust-side classifier has a name +
+        // pixel-format fallback for that case, so we just surface whatever
+        // we find here and let downstream decide.
+        string? compressionSettings = null;
+        var csFn = obj.GetOrDefault<FName>("CompressionSettings").Text;
+        if (!string.IsNullOrEmpty(csFn) && csFn != "None") compressionSettings = csFn;
+
         long originalBytes = 0;
         var sizes = new long[numMips];
+        var mipLevels = new List<StripMipsLevel>(numMips);
         for (int i = 0; i < numMips; i++)
         {
             int w = Math.Max(1, sizeX >> i);
             int h = Math.Max(1, sizeY >> i);
             sizes[i] = BytesForMip(formatName, w, h);
             originalBytes += sizes[i];
+            mipLevels.Add(new StripMipsLevel(w, h, sizes[i]));
         }
         int firstKept = numMips - 1;
         for (int i = 0; i < numMips; i++)
@@ -251,7 +305,10 @@ public static class StripMipsPlannerImpl
             int h = Math.Max(1, sizeY >> i);
             if (Math.Max(w, h) <= maxDim) { firstKept = i; break; }
         }
-        if (firstKept <= 0) return null;
+        // firstKept == 0 means the texture is already at/below cap and would
+        // save 0 bytes at this maxDim. We still emit the item so v0.7.2's
+        // client-side reprojection can produce non-zero savings if the user
+        // tightens the cap.
 
         long saveBytes = 0;
         for (int i = 0; i < firstKept; i++) saveBytes += sizes[i];
@@ -268,7 +325,9 @@ public static class StripMipsPlannerImpl
             DropMipCount: firstKept,
             KeptMipCount: numMips - firstKept,
             SaveBytes: saveBytes,
-            OriginalBytes: originalBytes);
+            OriginalBytes: originalBytes,
+            CompressionSettings: compressionSettings,
+            Mips: mipLevels);
     }
 
     /// <summary>Per-mip byte size in bytes for a given pixel format.</summary>

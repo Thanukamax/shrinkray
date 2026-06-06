@@ -243,6 +243,34 @@ bun run tauri build                  # production binary
 
 </details>
 
+## Building the AppImage (Linux)
+
+`bun run tauri build --bundles appimage` will produce `target/release/bundle/appimage/shrinkray_<version>_amd64.AppImage` (~109 MB, self-contained, runs on any glibc-based x86_64 distro from ~2022 onward).
+
+Required system packages (Fedora 41+/Nobara 43, names approximate on other distros):
+
+```bash
+sudo dnf install \
+  webkit2gtk4.1-devel gtk3-devel libsoup3-devel \
+  openssl-devel librsvg2-devel \
+  fuse fuse-libs file desktop-file-utils \
+  patchelf gobject-introspection-devel
+```
+
+Then build with `NO_STRIP=true` to skip linuxdeploy's bundled `strip` binary, which is too old to handle modern ELF `.relr.dyn` relocation sections (present in every Fedora 41+/Nobara 43 system library):
+
+```bash
+NO_STRIP=true bun run tauri build --bundles appimage
+```
+
+Without `NO_STRIP=true`, the bundle step prints hundreds of `unknown type [0x13] section .relr.dyn` errors and exits non-zero — the AppDir is still fully populated, but linuxdeploy never invokes its appimage plugin. The flag is harmless: shipped libs come pre-stripped from `/lib64`, and the final AppImage is squashfs-compressed regardless.
+
+Known limitations:
+- The .NET sidecar (`src-tauri/binaries/sidecar/`) and AI models (`src-tauri/binaries/ai-models/`) are **not yet bundled** into the AppImage — features that depend on them (asset inspector, AI restore) will need the sidecar installed alongside or a follow-up `resources` entry in `src-tauri/tauri.conf.json`.
+- AppImage runtime needs FUSE2 (`fuse-libs` on Fedora). On hosts without FUSE, run with `--appimage-extract-and-run`.
+
+## Layout
+
 ---
 
 ## What this build does

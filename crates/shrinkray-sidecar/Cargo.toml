@@ -16,3 +16,4 @@ thiserror.workspace = true
 [dev-dependencies]
 tempfile.workspace = true
 repak.workspace = true
+base64 = "0.22"

@@ -112,6 +112,16 @@ pub struct InspectAssetResult {
     pub textures: Vec<TextureInfo>,
 }
 
+/// One mip level — width, height, on-disk bytes. v0.7.2: the planner returns
+/// the full mip array per texture so the frontend can re-project locally
+/// when the user changes max_dim, instead of round-tripping to the sidecar.
+#[derive(Debug, Deserialize, Serialize, Clone)]
+pub struct StripMipsLevel {
+    pub w: i32,
+    pub h: i32,
+    pub bytes: i64,
+}
+
 #[derive(Debug, Deserialize, Serialize, Clone)]
 pub struct StripMipsItem {
     pub asset_path: String,
@@ -124,6 +134,17 @@ pub struct StripMipsItem {
     pub kept_mip_count: i32,
     pub save_bytes: i64,
     pub original_bytes: i64,
+    /// `TC_*` UPROPERTY when the cook serialized it. Drives the
+    /// `shrinkray_core::classifier` routing decision (normal-map exemption,
+    /// AI vs backup restore class). Many UE4 cooks omit this; downstream
+    /// uses name + pixel-format fallbacks.
+    #[serde(default)]
+    pub compression_settings: Option<String>,
+    /// v0.7.2: full mip pyramid for client-side re-projection on max_dim
+    /// changes. `#[serde(default)]` so old planner responses without this
+    /// field still deserialize (legacy paths fall back to a sidecar call).
+    #[serde(default)]
+    pub mips: Vec<StripMipsLevel>,
 }
 
 #[derive(Debug, Deserialize, Serialize, Clone)]
@@ -132,13 +153,93 @@ pub struct ClassCount {
     pub count: i32,
 }
 
+/// v0.6 apply-side request — per-texture targets to strip.
+#[derive(Debug, Serialize, Deserialize, Clone)]
+pub struct StripTarget {
+    pub asset_path: String,
+    pub max_dim: i32,
+}
+
+/// One modified or original file payload returned by the applier. Bytes are
+/// base64-encoded so they fit cleanly in the JSON IPC line.
 #[derive(Debug, Deserialize, Serialize, Clone)]
-pub struct ApplyStripMipsStub {
-    pub implemented: bool,
-    pub phase: String,
-    pub message: String,
-    pub backup_required: bool,
-    pub requires: Vec<String>,
+pub struct StripAppliedFile {
+    pub pak_path: String,
+    pub bytes_base64: String,
+}
+
+#[derive(Debug, Deserialize, Serialize, Clone)]
+pub struct StripAppliedTexture {
+    pub asset_path: String,
+    pub export_name: String,
+    pub drop_mip_count: i32,
+    pub kept_mip_count: i32,
+    pub original_top_dim: i32,
+    pub kept_top_dim: i32,
+    pub saved_bytes: i64,
+    /// UE pixel-format string (e.g. "PF_DXT5", "PF_BC5"). Always present —
+    /// the applier can't strip a texture without parsing FTexturePlatformData.
+    #[serde(default)]
+    pub pixel_format: String,
+    /// UTexture.CompressionSettings UPROPERTY (e.g. "TC_Default",
+    /// "TC_Normalmap", "TC_Grayscale"). None when the cook didn't serialize
+    /// it — most modern cooks do, even when the value equals the default.
+    #[serde(default)]
+    pub compression_settings: Option<String>,
+    pub files: Vec<StripAppliedFile>,
+    pub original_files: Vec<StripAppliedFile>,
+}
+
+#[derive(Debug, Deserialize, Serialize, Clone)]
+pub struct StripSkipped {
+    pub asset_path: String,
+    pub reason: String,
+}
+
+/// v0.7.3 — one mip level of new top-mip data to splice in. `bytes_base64`
+/// is BC-encoded by `shrinkray_core::bcn` upstream and handed to the sidecar
+/// as-is. Width/height drive the FTexturePlatformData SizeX/SizeY fields.
+#[derive(Debug, Serialize, Deserialize, Clone)]
+pub struct RestoreMipLevel {
+    pub w: i32,
+    pub h: i32,
+    pub bytes_base64: String,
+}
+
+#[derive(Debug, Serialize, Deserialize, Clone)]
+pub struct RestoreTarget {
+    pub asset_path: String,
+    pub new_top_mips: Vec<RestoreMipLevel>,
+}
+
+#[derive(Debug, Deserialize, Serialize, Clone)]
+pub struct RestoreAppliedTexture {
+    pub asset_path: String,
+    pub export_name: String,
+    pub inserted_mip_count: i32,
+    pub previous_top_dim: i32,
+    pub new_top_dim: i32,
+    pub inserted_bytes: i64,
+    pub files: Vec<StripAppliedFile>,
+    pub original_files: Vec<StripAppliedFile>,
+}
+
+#[derive(Debug, Deserialize, Serialize, Clone)]
+pub struct ApplyRestoreMipsResult {
+    pub pak_path: String,
+    pub engine_version: String,
+    pub applied: Vec<RestoreAppliedTexture>,
+    pub skipped: Vec<StripSkipped>,
+    pub total_inserted_bytes: i64,
+}
+
+#[derive(Debug, Deserialize, Serialize, Clone)]
+pub struct ApplyStripMipsResult {
+    pub pak_path: String,
+    pub engine_version: String,
+    pub applied: Vec<StripAppliedTexture>,
+    pub skipped: Vec<StripSkipped>,
+    pub total_saved_bytes: i64,
 }
 
 #[derive(Debug, Deserialize, Serialize, Clone)]
@@ -263,16 +364,109 @@ impl Sidecar {
         Ok(serde_json::from_value(result)?)
     }
 
-    /// v0.6 stub: returns a structured "not implemented" payload. Lets the
-    /// frontend wire the apply button up front so v0.6's binary write
-    /// integration is a swap-in, not a new IPC.
-    pub fn apply_strip_mips(&mut self, pak_path: impl AsRef<Path>) -> Result<ApplyStripMipsStub> {
+    /// v0.6 real apply path. For each target asset, the sidecar extracts the
+    /// triple from the pak via CUE4Parse, opens it via UAssetAPI, attempts the
+    /// byte-level mip-tail strip on Export.Extras, regenerates .ubulk, and
+    /// returns modified bytes (base64) alongside the original bytes for backup.
+    ///
+    /// rc1 caveat: targets that hit the in-flight per-mip parser path land in
+    /// `skipped` with a diagnostic reason. The framework is wired end-to-end
+    /// (extraction → UAssetAPI load → Extras parse → .ubulk regen → write
+    /// back); subsequent v0.6.x releases pin down the last few bytes of the
+    /// UE4.22 cooked layout to flip skipped → applied.
+    pub fn apply_strip_mips(
+        &mut self,
+        pak_path: impl AsRef<Path>,
+        targets: &[StripTarget],
+        game: Option<&str>,
+        engine_version: Option<&str>,
+    ) -> Result<ApplyStripMipsResult> {
+        self.apply_strip_mips_with_progress(pak_path, targets, game, engine_version, |_| {})
+    }
+
+    /// v0.7.2: streamed-progress variant. `on_progress` fires once per
+    /// texture the sidecar finishes — payload shape matches
+    /// `ProgressEmitter.Emit(...)` in C# (`current`, `total`, `asset_path`,
+    /// `status`, `saved_bytes`, optional `reason`). UI uses it to render a
+    /// live counter + progress bar instead of the previous black-box "applying…".
+    pub fn apply_strip_mips_with_progress<F>(
+        &mut self,
+        pak_path: impl AsRef<Path>,
+        targets: &[StripTarget],
+        game: Option<&str>,
+        engine_version: Option<&str>,
+        on_progress: F,
+    ) -> Result<ApplyStripMipsResult>
+    where
+        F: FnMut(&Value),
+    {
         let mut args = serde_json::Map::new();
         args.insert(
             "pak_path".into(),
             Value::String(pak_path.as_ref().display().to_string()),
         );
-        let result = self.call("apply_strip_mips", Some(Value::Object(args)))?;
+        args.insert("targets".into(), serde_json::to_value(targets)?);
+        if let Some(g) = game {
+            args.insert("game".into(), Value::String(g.into()));
+        }
+        if let Some(ev) = engine_version {
+            args.insert("engine_version".into(), Value::String(ev.into()));
+        }
+        let result = self.call_with_progress(
+            "apply_strip_mips",
+            Some(Value::Object(args)),
+            on_progress,
+        )?;
+        Ok(serde_json::from_value(result)?)
+    }
+
+    /// v0.7.3 — reverse splice. For each target, inject a new top-mip chain
+    /// (BC-encoded bytes per level, base64-wrapped) into the existing
+    /// FTexturePlatformData, regenerating .ubulk and patching SizeX/SizeY/
+    /// NumMips. Returns the same StripAppliedFile shape so callers can run
+    /// the modified triple through `texture_strip::apply_to_pak` to write it
+    /// back into the pak.
+    ///
+    /// Per-texture progress is emitted on the same `strip-progress` channel
+    /// with `op = "apply_restore_mips"`.
+    pub fn apply_restore_mips(
+        &mut self,
+        pak_path: impl AsRef<Path>,
+        targets: &[RestoreTarget],
+        game: Option<&str>,
+        engine_version: Option<&str>,
+    ) -> Result<ApplyRestoreMipsResult> {
+        self.apply_restore_mips_with_progress(pak_path, targets, game, engine_version, |_| {})
+    }
+
+    pub fn apply_restore_mips_with_progress<F>(
+        &mut self,
+        pak_path: impl AsRef<Path>,
+        targets: &[RestoreTarget],
+        game: Option<&str>,
+        engine_version: Option<&str>,
+        on_progress: F,
+    ) -> Result<ApplyRestoreMipsResult>
+    where
+        F: FnMut(&Value),
+    {
+        let mut args = serde_json::Map::new();
+        args.insert(
+            "pak_path".into(),
+            Value::String(pak_path.as_ref().display().to_string()),
+        );
+        args.insert("targets".into(), serde_json::to_value(targets)?);
+        if let Some(g) = game {
+            args.insert("game".into(), Value::String(g.into()));
+        }
+        if let Some(ev) = engine_version {
+            args.insert("engine_version".into(), Value::String(ev.into()));
+        }
+        let result = self.call_with_progress(
+            "apply_restore_mips",
+            Some(Value::Object(args)),
+            on_progress,
+        )?;
         Ok(serde_json::from_value(result)?)
     }
 
@@ -305,6 +499,24 @@ impl Sidecar {
     }
 
     fn call(&mut self, cmd: &str, args: Option<Value>) -> Result<Value> {
+        self.call_with_progress(cmd, args, |_| {})
+    }
+
+    /// v0.7.2: like [`Self::call`] but reads any number of intermediate
+    /// `{ id, progress: ... }` lines from stdout before the terminal
+    /// `{ id, ok, result/error }` line. `on_progress` is called once per
+    /// progress payload — Tauri commands hand it a closure that emits a
+    /// frontend event, tests hand it a noop, the no-arg [`Self::call`]
+    /// hands it a noop too so existing callers don't have to change.
+    pub fn call_with_progress<F>(
+        &mut self,
+        cmd: &str,
+        args: Option<Value>,
+        mut on_progress: F,
+    ) -> Result<Value>
+    where
+        F: FnMut(&Value),
+    {
         let id = self.next_id.fetch_add(1, Ordering::Relaxed);
         let req = Request { id: id.to_string(), cmd, args };
         let line = serde_json::to_string(&req)?;
@@ -312,20 +524,41 @@ impl Sidecar {
         self.stdin.write_all(b"\n")?;
         self.stdin.flush()?;
 
-        let mut buf = String::new();
-        let n = self.stdout.read_line(&mut buf)?;
-        if n == 0 {
-            bail!("sidecar closed stdout unexpectedly");
+        // Distinguish progress vs terminal-response lines by which key the
+        // sidecar populated. Progress lines carry `progress`; terminal lines
+        // carry `ok` (with `result` or `error`). We keep reading lines until
+        // we see the terminal one.
+        loop {
+            let mut buf = String::new();
+            let n = self.stdout.read_line(&mut buf)?;
+            if n == 0 {
+                bail!("sidecar closed stdout unexpectedly");
+            }
+            let trimmed = buf.trim_end();
+            // Cheap pre-parse: is this a progress line or a result line?
+            // Parsing as Value first avoids two `from_str` calls in the
+            // common case.
+            let v: Value = serde_json::from_str(trimmed)
+                .with_context(|| format!("malformed sidecar line: {buf}"))?;
+            if let Some(progress) = v.get("progress") {
+                on_progress(progress);
+                continue;
+            }
+            // Treat anything without a `progress` field as the terminal
+            // response. If `ok` is missing entirely we surface a clear error
+            // rather than panicking.
+            let resp: Response = serde_json::from_value(v)
+                .with_context(|| format!("malformed sidecar response: {buf}"))?;
+            if !resp.ok {
+                return Err(anyhow!(
+                    "sidecar error: {}",
+                    resp.error.unwrap_or_else(|| "<no error message>".into())
+                ));
+            }
+            return resp
+                .result
+                .ok_or_else(|| anyhow!("sidecar returned ok=true with no result"));
         }
-        let resp: Response = serde_json::from_str(buf.trim_end())
-            .with_context(|| format!("malformed sidecar response: {buf}"))?;
-        if !resp.ok {
-            return Err(anyhow!(
-                "sidecar error: {}",
-                resp.error.unwrap_or_else(|| "<no error message>".into())
-            ));
-        }
-        resp.result.ok_or_else(|| anyhow!("sidecar returned ok=true with no result"))
     }
 }
 

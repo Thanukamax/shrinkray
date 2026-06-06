@@ -10,6 +10,15 @@ namespace Shrinkray.Sidecar;
 //   { "id": "2", "ok": true, "result": { "entries": [...] } }
 //   { "id": "2", "ok": false, "error": "..." }
 // One JSON object per line. EOF on stdin = exit.
+//
+// v0.7.2: a handler MAY also emit 0..N intermediate progress lines before the
+// final response. These look like:
+//   { "id": "2", "progress": { "current": 5, "total": 200, ... } }
+// and are written via ProgressEmitter.Emit(payload) from inside the handler.
+// The terminal response (with the `ok` field) is still required and arrives
+// after all progress messages — clients distinguish by presence of `progress`
+// vs `ok` per line. Backward compatible: clients that ignore `progress` lines
+// keep working with no protocol break.
 public static class Program
 {
     public const string SidecarVersion = "0.1.0";
@@ -38,15 +47,29 @@ public static class Program
         {
             if (string.IsNullOrWhiteSpace(line)) continue;
             string responseJson;
+            string? capturedId = null;
             try
             {
                 var request = JsonSerializer.Deserialize<Request>(line, JsonOpts.Reader)
                     ?? throw new InvalidOperationException("null request");
-                responseJson = await Dispatch(request);
+                capturedId = request.Id;
+                // Bind the per-request progress emitter for the duration of
+                // Dispatch. Sidecar is single-threaded (one request at a
+                // time), so a static-field context is enough — no AsyncLocal.
+                ProgressEmitter.Bind(stdout, request.Id);
+                try
+                {
+                    responseJson = await Dispatch(request);
+                }
+                finally
+                {
+                    ProgressEmitter.Unbind();
+                }
             }
             catch (Exception ex)
             {
-                var err = new Response { Id = null, Ok = false, Error = $"protocol error: {ex.Message}" };
+                ProgressEmitter.Unbind();
+                var err = new Response { Id = capturedId, Ok = false, Error = $"protocol error: {ex.Message}" };
                 responseJson = JsonSerializer.Serialize(err, JsonOpts.Writer);
             }
             await stdout.WriteLineAsync(responseJson);
@@ -107,6 +130,8 @@ public static class Program
                 "inspect_asset" => HandleInspectAsset(req.Args),
                 "plan_strip_mips" => HandlePlanStripMips(req.Args),
                 "apply_strip_mips" => HandleApplyStripMips(req.Args),
+                "apply_restore_mips" => HandleApplyRestoreMips(req.Args),
+                "probe_texture_bytes" => HandleProbeTextureBytes(req.Args),
                 _ => throw new InvalidOperationException($"unknown command: {req.Cmd}"),
             };
             resp = new Response { Id = req.Id, Ok = true, Result = result };
@@ -157,27 +182,136 @@ public static class Program
         return AssetInspectorImpl.Inspect(pakPath, assetPath, game);
     }
 
+    private static object HandleProbeTextureBytes(JsonElement? args)
+    {
+        if (args is null) throw new ArgumentException("probe_texture_bytes requires args.asset_path");
+        var assetPath = args.Value.TryGetProperty("asset_path", out var p)
+            ? p.GetString() ?? throw new ArgumentException("asset_path must be string")
+            : throw new ArgumentException("missing asset_path");
+        var engineVer = UAssetAPI.UnrealTypes.EngineVersion.VER_UE4_AUTOMATIC_VERSION;
+        if (args.Value.TryGetProperty("engine_version", out var ev) && ev.ValueKind == JsonValueKind.String)
+        {
+            var name = ev.GetString();
+            if (!string.IsNullOrEmpty(name) && Enum.TryParse<UAssetAPI.UnrealTypes.EngineVersion>(name, true, out var parsed))
+                engineVer = parsed;
+        }
+        bool walkMips = args.Value.TryGetProperty("walk_mips", out var wm)
+            && wm.ValueKind == JsonValueKind.True;
+        string? pakPath = args.Value.TryGetProperty("pak_path", out var pp) && pp.ValueKind == JsonValueKind.String
+            ? pp.GetString()
+            : null;
+        var game = CUE4Parse.UE4.Versions.EGame.GAME_UE5_LATEST;
+        if (args.Value.TryGetProperty("game", out var g) && g.ValueKind == JsonValueKind.String)
+        {
+            var name = g.GetString();
+            if (!string.IsNullOrEmpty(name) && Enum.TryParse<CUE4Parse.UE4.Versions.EGame>(name, true, out var parsed))
+                game = parsed;
+        }
+        return TextureBytesProbe.Probe(assetPath, engineVer, walkMips, pakPath, game);
+    }
+
     /// <summary>
-    /// v0.6 stub. The write-side requires either UAssetAPI integration (to
-    /// rewrite cooked .uasset/.uexp/.ubulk in place) or a custom binary
-    /// surgery pass. Both are non-trivial and land in v0.6. This stub locks
-    /// the IPC shape so the frontend can render a proper "what's next" state
-    /// without 404ing on the command.
+    /// v0.6 write-side: for each (asset_path, max_dim) target inside a pak,
+    /// rewrite the .uasset Extras byte buffer to drop top mips above max_dim
+    /// and regenerate the .ubulk with surviving mip payloads only. Returns
+    /// modified bytes (base64) keyed by pak-relative path so the Rust side
+    /// can substitute them in a repak rewrite. Also returns the original
+    /// bytes so backup.rs can record them for restore.
     /// </summary>
     private static object HandleApplyStripMips(JsonElement? args)
     {
-        return new
+        if (args is null) throw new ArgumentException("apply_strip_mips requires args.pak_path + args.targets");
+        var pakPath = args.Value.TryGetProperty("pak_path", out var p)
+            ? p.GetString() ?? throw new ArgumentException("pak_path must be string")
+            : throw new ArgumentException("missing pak_path");
+        if (!args.Value.TryGetProperty("targets", out var t) || t.ValueKind != JsonValueKind.Array)
+            throw new ArgumentException("missing targets array");
+
+        var targets = new List<StripTarget>();
+        foreach (var item in t.EnumerateArray())
         {
-            implemented = false,
-            phase = "v0.6",
-            message =
-                "apply_strip_mips is not implemented yet. The read-side (plan_strip_mips) " +
-                "is byte-exact and ready; the write-side needs UAssetAPI integration to " +
-                "rewrite cooked .uasset/.uexp/.ubulk triples and repack into the pak. " +
-                "Track the v0.6 milestone for write-side mip stripping.",
-            backup_required = true,
-            requires = new[] { "UAssetAPI .NET dep", "pak rewriter extension", "LoadPackage validation per rewritten asset" }
-        };
+            var assetPath = item.TryGetProperty("asset_path", out var ap)
+                ? ap.GetString() ?? throw new ArgumentException("target.asset_path must be string")
+                : throw new ArgumentException("missing target.asset_path");
+            int maxDim = item.TryGetProperty("max_dim", out var md) && md.ValueKind == JsonValueKind.Number
+                ? md.GetInt32()
+                : throw new ArgumentException("missing target.max_dim");
+            targets.Add(new StripTarget(assetPath, maxDim));
+        }
+
+        var game = CUE4Parse.UE4.Versions.EGame.GAME_UE5_LATEST;
+        if (args.Value.TryGetProperty("game", out var g) && g.ValueKind == JsonValueKind.String)
+        {
+            var name = g.GetString();
+            if (!string.IsNullOrEmpty(name) && Enum.TryParse<CUE4Parse.UE4.Versions.EGame>(name, true, out var parsed))
+                game = parsed;
+        }
+        var engineVer = UAssetAPI.UnrealTypes.EngineVersion.VER_UE4_AUTOMATIC_VERSION;
+        if (args.Value.TryGetProperty("engine_version", out var ev) && ev.ValueKind == JsonValueKind.String)
+        {
+            var name = ev.GetString();
+            if (!string.IsNullOrEmpty(name) && Enum.TryParse<UAssetAPI.UnrealTypes.EngineVersion>(name, true, out var parsed))
+                engineVer = parsed;
+        }
+
+        return StripMipsApplier.Apply(pakPath, targets, game, engineVer);
+    }
+
+    /// <summary>
+    /// v0.7.3 reverse splice. Mirrors HandleApplyStripMips arg parsing but
+    /// the targets carry per-mip BC-encoded bytes (base64) instead of a
+    /// max_dim — the actual encoding work happens in Rust upstream.
+    /// </summary>
+    private static object HandleApplyRestoreMips(JsonElement? args)
+    {
+        if (args is null) throw new ArgumentException("apply_restore_mips requires args.pak_path + args.targets");
+        var pakPath = args.Value.TryGetProperty("pak_path", out var p)
+            ? p.GetString() ?? throw new ArgumentException("pak_path must be string")
+            : throw new ArgumentException("missing pak_path");
+        if (!args.Value.TryGetProperty("targets", out var t) || t.ValueKind != JsonValueKind.Array)
+            throw new ArgumentException("missing targets array");
+
+        var targets = new List<RestoreTarget>();
+        foreach (var item in t.EnumerateArray())
+        {
+            var assetPath = item.TryGetProperty("asset_path", out var ap)
+                ? ap.GetString() ?? throw new ArgumentException("target.asset_path must be string")
+                : throw new ArgumentException("missing target.asset_path");
+            if (!item.TryGetProperty("new_top_mips", out var ntm) || ntm.ValueKind != JsonValueKind.Array)
+                throw new ArgumentException($"missing new_top_mips on target {assetPath}");
+            var mips = new List<RestoreMipLevel>();
+            foreach (var mip in ntm.EnumerateArray())
+            {
+                int w = mip.TryGetProperty("w", out var wEl) && wEl.ValueKind == JsonValueKind.Number
+                    ? wEl.GetInt32()
+                    : throw new ArgumentException($"missing mip.w on {assetPath}");
+                int h = mip.TryGetProperty("h", out var hEl) && hEl.ValueKind == JsonValueKind.Number
+                    ? hEl.GetInt32()
+                    : throw new ArgumentException($"missing mip.h on {assetPath}");
+                var bytes = mip.TryGetProperty("bytes_base64", out var bEl) && bEl.ValueKind == JsonValueKind.String
+                    ? bEl.GetString() ?? throw new ArgumentException("mip.bytes_base64 must be string")
+                    : throw new ArgumentException($"missing mip.bytes_base64 on {assetPath}");
+                mips.Add(new RestoreMipLevel(w, h, bytes));
+            }
+            targets.Add(new RestoreTarget(assetPath, mips));
+        }
+
+        var game = CUE4Parse.UE4.Versions.EGame.GAME_UE5_LATEST;
+        if (args.Value.TryGetProperty("game", out var g) && g.ValueKind == JsonValueKind.String)
+        {
+            var name = g.GetString();
+            if (!string.IsNullOrEmpty(name) && Enum.TryParse<CUE4Parse.UE4.Versions.EGame>(name, true, out var parsed))
+                game = parsed;
+        }
+        var engineVer = UAssetAPI.UnrealTypes.EngineVersion.VER_UE4_AUTOMATIC_VERSION;
+        if (args.Value.TryGetProperty("engine_version", out var ev) && ev.ValueKind == JsonValueKind.String)
+        {
+            var name = ev.GetString();
+            if (!string.IsNullOrEmpty(name) && Enum.TryParse<UAssetAPI.UnrealTypes.EngineVersion>(name, true, out var parsed))
+                engineVer = parsed;
+        }
+
+        return RestoreMipsApplier.Apply(pakPath, targets, game, engineVer);
     }
 
     private static object HandlePlanStripMips(JsonElement? args)
@@ -216,6 +350,60 @@ public sealed class Response
     [JsonPropertyName("ok")] public bool Ok { get; set; }
     [JsonPropertyName("result")] public object? Result { get; set; }
     [JsonPropertyName("error")] public string? Error { get; set; }
+}
+
+public sealed class ProgressMessage
+{
+    [JsonPropertyName("id")] public string? Id { get; set; }
+    [JsonPropertyName("progress")] public object? Progress { get; set; }
+}
+
+/// <summary>
+/// Per-request progress emitter. <see cref="Program.Main"/> binds the current
+/// stdout + request id before dispatching a handler; handlers call
+/// <see cref="Emit"/> any number of times to write intermediate progress lines
+/// alongside the eventual response. The Rust client parses progress lines
+/// separately from the terminal response by checking for the `progress` field
+/// vs the `ok` field (see <c>shrinkray-sidecar::Sidecar::call_with_progress</c>).
+///
+/// Thread-safe: a handler may emit progress from worker threads via
+/// <see cref="Parallel.ForEach"/>; the internal lock keeps WriteLine + Flush
+/// from interleaving bytes between threads. Without the lock concurrent calls
+/// can corrupt the JSON stream and the Rust client's line-based parser fails.
+/// </summary>
+public static class ProgressEmitter
+{
+    private static TextWriter? _stdout;
+    private static string? _requestId;
+    private static readonly object _writeLock = new();
+
+    internal static void Bind(TextWriter stdout, string? requestId)
+    {
+        _stdout = stdout;
+        _requestId = requestId;
+    }
+
+    internal static void Unbind()
+    {
+        _stdout = null;
+        _requestId = null;
+    }
+
+    public static void Emit(object payload)
+    {
+        var stdout = _stdout;
+        if (stdout is null) return;
+        var msg = new ProgressMessage { Id = _requestId, Progress = payload };
+        var json = JsonSerializer.Serialize(msg, JsonOpts.Writer);
+        // WriteLine + Flush keep the client's read loop unblocked; without
+        // the flush stdout buffering can hold the message until the response.
+        // The lock prevents concurrent writers from interleaving bytes.
+        lock (_writeLock)
+        {
+            stdout.WriteLine(json);
+            stdout.Flush();
+        }
+    }
 }
 
 public sealed record PingResult(

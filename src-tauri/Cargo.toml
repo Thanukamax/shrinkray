@@ -21,10 +21,21 @@ tauri-build = { version = "2", features = [] }
 [dependencies]
 tauri = { version = "2", features = ["devtools"] }
 tauri-plugin-dialog = "2"
-shrinkray-core.workspace = true
+# v0.7.0: pull in shrinkray-core's `inference` feature so the AI-restore
+# Tauri command can probe ONNX models. ORT adds ~200 MB to the build but
+# it's only loaded when the user actually clicks "Restore (AI)".
+shrinkray-core = { workspace = true, features = ["inference"] }
 shrinkray-audit.workspace = true
 shrinkray-sidecar.workspace = true
+# v0.7.4: Δ-Codec — combined AI-fast / byte-exact texture compression.
+# See docs/delta-codec-spec.md for the falsifiable claim + bench results.
+shrinkray-delta-codec.workspace = true
+image.workspace = true
 serde.workspace = true
 serde_json.workspace = true
 anyhow.workspace = true
 dirs = "5"
+base64 = "0.22"
+
+[dev-dependencies]
+tempfile.workspace = true
