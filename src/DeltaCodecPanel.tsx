@@ -143,6 +143,9 @@ export function DeltaCodecPanel() {
                   <th>residual</th>
                   <th>Δ total</th>
                   <th>ratio</th>
+                  <th title="residual ÷ top mip — marginal cost of byte-exact reversibility when the low mip already lives in the stripped pak">
+                    sidecar
+                  </th>
                   <th>max err</th>
                   <th>byte-exact</th>
                 </tr>
@@ -168,6 +171,15 @@ export function DeltaCodecPanel() {
                     >
                       {r.ratio.toFixed(2)}×
                     </td>
+                    <td
+                      style={{
+                        textAlign: 'right',
+                        color: '#6fe0c0',
+                        fontWeight: 600,
+                      }}
+                    >
+                      {(r.residual_zst_bytes / r.top_mip_bytes).toFixed(2)}×
+                    </td>
                     <td style={{ textAlign: 'right' }}>{r.max_channel_error}</td>
                     <td
                       style={{
@@ -188,9 +200,10 @@ export function DeltaCodecPanel() {
               {result.best_lossless_ratio.toFixed(2)}×
             </span>{' '}
             of the ExactBackup baseline (the q=1 oracle — smallest across predictors). q&gt;1 rows
-            trade away byte-exactness and don&apos;t count as wins. Note: this ratio includes the
-            low mip; in the strip workflow that mip already lives in the pak, so the true marginal
-            cost of reversibility is the <b>residual</b> column alone.
+            trade away byte-exactness and don&apos;t count as wins. The <b>ratio</b> column counts
+            the low mip; in the strip workflow that mip already lives in the pak, so the number that
+            matters in-workflow is the <b style={{ color: '#6fe0c0' }}>sidecar</b> column — residual
+            ÷ top mip, the true marginal cost of making a stripped texture byte-exactly restorable.
           </p>
         </div>
       )}
