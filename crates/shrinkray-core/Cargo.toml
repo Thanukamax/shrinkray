@@ -41,6 +41,7 @@ tempfile.workspace = true
 clap = { workspace = true }
 image = { version = "0.25", default-features = false, features = ["png", "jpeg", "webp"] }
 rayon = "1.10"
+zstd = "0.13"
 # walkdir + shrinkray-delta-codec live in [dependencies] already (workspace
 # pulled the delta-codec into core in the v0.7.4 reshuffle), no need to dup
 # them here.
@@ -75,3 +76,10 @@ required-features = ["inference"]
 name = "bcn_gate"
 path = "examples/bcn_gate.rs"
 required-features = ["inference"]
+
+# Cross-asset dedup prize sizer: exact dups, near-dups (perceptual hash), and
+# intra-material cross-map redundancy (zstd joint vs independent). Model-free,
+# no ORT — uses the dev-dep image + zstd directly.
+[[example]]
+name = "crossasset_gate"
+path = "examples/crossasset_gate.rs"
