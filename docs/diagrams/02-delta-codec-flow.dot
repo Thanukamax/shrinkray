@@ -1,0 +1,53 @@
+// shrinkray — Delta-Codec data flow (encode / decode)
+// render: dot -Tsvg 02-delta-codec-flow.dot -o 02-delta-codec-flow.svg
+digraph deltacodec {
+  rankdir=LR;
+  bgcolor="white";
+  labelloc="t";
+  fontname="Helvetica"; fontsize=16;
+  label="Δ-Codec data flow  —  encode is compile-time (cheap to be expensive) · decode is the hot path (red)";
+  node  [shape=box style="rounded,filled" fontname="Helvetica" fontsize=11 color="#333333" penwidth=1.1 margin="0.16,0.09" fillcolor="#eef3f8"];
+  edge  [fontname="Helvetica" fontsize=9 color="#555555"];
+
+  subgraph cluster_enc {
+    label="ENCODE  (offline — can afford anything)";
+    style="rounded,filled"; fillcolor="#eef6ef"; color="#9ccfa6"; fontsize=12;
+    E1 [label="top mip (original)"];
+    E2 [label="low mip\n(kept in stripped pak)"];
+    E3 [label="predictor\nbilinear | ESRGAN" shape=diamond fillcolor="#dfe7f3"];
+    E4 [label="pred = predict(low → top dims)"];
+    E5 [label="residual = top − pred\n(int16 per channel)"];
+    E6 [label="quant ÷ q\n(identity at q=1)"];
+    E7 [label="zstd-19"];
+    E8 [label="sha256(top)\nanti-cheat receipt"];
+    E2 -> E3 -> E4 -> E5 -> E6 -> E7;
+    E1 -> E5;
+    E1 -> E8;
+  }
+
+  BS [label="DeltaBitstream (.dcdc)\nmagic · PredictorId · q · dims\nlow_mip_rgba · residual_zst · sha256"
+      shape=box style="filled" fillcolor="#2b2b2b" fontcolor="white" penwidth=0];
+
+  subgraph cluster_dec {
+    label="DECODE  (hot path — must stay cheap)";
+    style="rounded,filled"; fillcolor="#fbeeee"; color="#e0a3a3"; fontsize=12;
+    X1 [label="assert PredictorId matches" fillcolor="#5a1a1a" fontcolor="white"];
+    X2 [label="pred = predict(low → top dims)" fillcolor="#5a1a1a" fontcolor="white"];
+    X3 [label="residual = unzstd · unquant" fillcolor="#5a1a1a" fontcolor="white"];
+    X4 [label="restored = clamp(pred + residual)" fillcolor="#5a1a1a" fontcolor="white"];
+    X5 [label="sha256(restored) == receipt?" shape=diamond fillcolor="#5a1a1a" fontcolor="white"];
+    X6 [label="byte-exact top mip" fillcolor="#1f6f3f" fontcolor="white"];
+    XF [label="reject — baseline drift" fillcolor="#7a5b00" fontcolor="white"];
+    X1 -> X2 -> X4;
+    X3 -> X4 -> X5;
+    X5 -> X6 [label="ok"];
+    X5 -> XF [label="mismatch"];
+  }
+
+  E7 -> BS;
+  E8 -> BS;
+  E2 -> BS [constraint=false];
+  BS -> X1;
+  BS -> X2;
+  BS -> X3;
+}
