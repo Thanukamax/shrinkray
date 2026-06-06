@@ -10,13 +10,13 @@
 
 [![Stack](https://img.shields.io/badge/stack-Tauri%20v2%20·%20Rust%20·%20React%2019-7c3aed?style=flat-square)](#stack)
 [![Sidecar](https://img.shields.io/badge/sidecar-.NET%208%20+%20CUE4Parse-512bd4?style=flat-square)](#stack)
-[![Tests](https://img.shields.io/badge/tests-157%20green-16a34a?style=flat-square)](#validation-against-real-games)
-[![Build](https://img.shields.io/badge/release-v0.5.0-0ea5e9?style=flat-square)](CHANGELOG.md)
+[![Tests](https://img.shields.io/badge/tests-223%20green-16a34a?style=flat-square)](#validation-against-real-games)
+[![Build](https://img.shields.io/badge/release-v0.7.3-0ea5e9?style=flat-square)](CHANGELOG.md)
 [![License](https://img.shields.io/badge/license-source--available-f59e0b?style=flat-square)](LICENSE)
 
 <br />
 
-<sub>analyze · audit · strip languages · trim paks · recompress loose files · backup & restore · cooked-asset inspection · mip-strip projection</sub>
+<sub>analyze · audit · strip languages · trim paks · recompress loose files · backup & restore · cooked-asset inspection · mip-strip projection · Δ-Codec residual compression</sub>
 
 </div>
 
@@ -152,6 +152,34 @@ Every destructive op is preceded by a differential backup entry. Preview mode is
 | Already-optimized AAA UE5 (IoStore) | **5–15 %** | Language stripping (the bulk) + orphan trimming |
 
 These are the upper-realistic numbers. The lower bound on a modern UE5 single-language AAA install is often **<5 %**. shrinkray surfaces the predicted delta in the diff report before any write.
+
+---
+
+## Δ-Codec (research artifact)
+
+Separate from the trim/backup workflow, shrinkray ships **Δ-Codec** — a texture
+compression scheme that puts *both* an AI-fast prediction and a byte-exact
+residual in **one bitstream**. Restore re-runs the predictor and adds the
+residual back: **byte-exact in RGBA at `quant_step == 1`**, verified by a
+per-texture SHA-256 receipt (the anti-cheat-safe property AI upscalers can't
+offer).
+
+What the validation actually says (paper-grade, not marketing):
+
+- **126 / 126 byte-exact restores** across 3 independent bench runs — the lossless
+  invariant holds.
+- **Bilinear is a shockingly strong baseline** for 1K PBR game content: median
+  residual sidecar is **24.5 % of a full backup**. PBR is engineered
+  smooth + tileable, so bilinear is near-optimal by construction.
+- **ESRGAN wins only the niche** (11 % of textures — industrial/fine-detail
+  normals). A perfect per-texture oracle beats forced-bilinear by just **5.3 %**,
+  so **bilinear ships as the default predictor**; ESRGAN is opt-in.
+
+The bitstream is **predictor-agnostic** (`PredictorId` enum) — future
+game-content-trained predictors slot in without a decoder recompile.
+
+→ Spec: [`docs/delta-codec-spec.md`](docs/delta-codec-spec.md) ·
+Diagrams: [`docs/architecture-diagrams.md`](docs/architecture-diagrams.md)
 
 ---
 
@@ -384,7 +412,7 @@ docs/screenshots/                   # README screenshots
 
 ## Validation against real games
 
-Unit tests build synthetic paks via `repak`'s writer and round-trip them through the trim + backup + restore pipeline — **157 tests, all in CI**. That gates correctness of the *plumbing*, not that shrinkray-modified games still launch.
+Unit tests build synthetic paks via `repak`'s writer and round-trip them through the trim + backup + restore pipeline — **223 tests, all in CI**. That gates correctness of the *plumbing*, not that shrinkray-modified games still launch.
 
 The one corpus test that would prove launch-safety — Lyra Starter Game cooked PC build, optimize, boot, watch for crash — needs an Epic account to download Lyra source and a full Unreal Engine install to cook a binary, neither of which fits free GitHub runners. Until a self-hosted runner with a pre-cooked corpus exists, **Lyra validation is a manual pre-release step**: see [`scripts/lyra-smoke.sh`](scripts/lyra-smoke.sh).
 

@@ -1,5 +1,38 @@
 # Changelog
 
+## Δ-Codec — research artifact (2026-05-22 → 2026-05-23)
+
+A texture compression scheme carrying both an AI-fast prediction and a
+byte-exact residual in one bitstream. Lives in `crates/shrinkray-delta-codec`;
+spec at `docs/delta-codec-spec.md`, diagrams at `docs/architecture-diagrams.md`.
+
+- **Δ-Codec crate** with pixel + BC-byte variants; predictor-agnostic
+  `PredictorId` bitstream; restore re-runs the predictor and adds the residual
+  for a byte-exact result at `quant_step == 1`, verified by a per-texture
+  SHA-256 receipt.
+- **Backup projection** of Δ-Codec savings over existing manifests + a live
+  demo panel in the Tauri UI.
+- **`EsrganX4Predictor`** (feature-gated `inference`) + a paper-grade
+  measurement harness.
+- **Validation (2026-05-23):** 126/126 byte-exact restores across 3 runs;
+  bilinear median sidecar = 24.5% of full backup on 56 PBR; ESRGAN wins 11% of
+  textures; perfect-oracle lift only 5.3% → **bilinear ships as the default
+  predictor**, ESRGAN opt-in.
+
+## v0.7.3 — 2026-05-22
+
+Phase 3 write-side + AI restore. The apply path that turns projections into
+real, reversible on-disk savings.
+
+- **v0.6.0** — pin the UE4 cooked-texture layout; ship write-side mip strip.
+- **v0.6.1** — wire pak write-back end-to-end with an inflation gate.
+- **v0.6.2** — vendor a patched `repak` so cooked paks actually shrink on disk.
+- **v0.7.0** — wire `ort` + ONNX inference primitive for AI restore.
+- **v0.7.1** — BCn en/decode + mip-chain regen for AI restore.
+- **v0.7.2** — streamed progress + dim-switch cache + parallel planner.
+- **v0.7.3** — C# sidecar reverse-splice (`apply_restore_mips`) closing the
+  restore loop.
+
 ## v0.5.0 — 2026-05-20
 
 Phase 2 read-side. Cooked texture data is now reachable end-to-end via a
