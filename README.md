@@ -179,7 +179,8 @@ The bitstream is **predictor-agnostic** (`PredictorId` enum) — future
 game-content-trained predictors slot in without a decoder recompile.
 
 → Spec: [`docs/delta-codec-spec.md`](docs/delta-codec-spec.md) ·
-Diagrams: [`docs/architecture-diagrams.md`](docs/architecture-diagrams.md)
+Diagrams: [`docs/architecture-diagrams.md`](docs/architecture-diagrams.md) ·
+Standalone crate: [**delta-mip**](https://github.com/Thanukamax/delta-mip) (Apache-2.0)
 
 ---
 
